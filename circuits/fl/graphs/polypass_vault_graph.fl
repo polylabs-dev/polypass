@@ -1,0 +1,555 @@
+/// Poly Pass Vault Graph — Stratum graph storage + Cortex AI governance
+/// Credential vault modeled as typed graph with overlays for breach status,
+/// password age, strength score, autofill frequency, and usage recency
+/// govern lex esn/global/org/polylabs/pass
+
+import polykit_identity
+import polykit_metering
+import polykit_governance
+
+// ── Enums ───────────────────────────────────────────────────────
+
+type Classification = enum {
+    Personal,
+    Sensitive,
+    Critical,
+}
+
+type CredentialState = enum {
+    Active,
+    Expired,
+    Rotated,
+    Compromised,
+    Deleted,
+}
+
+// ── Data: Node types (Stratum store graph + Cortex) ─────────────
+
+data CredentialNode : app v1 {
+    credential_id: string,
+    user_id: string,
+    url_domain: string,
+    username_hash: string,
+    password_encrypted: string,
+    notes_encrypted: string,
+    totp_seed: string,
+    passkey_credential_id: string,
+    classification: u8,
+    state: u8,
+    created_at: u64,
+    updated_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/pass
+    cortex {
+        redact [password_encrypted, notes_encrypted, totp_seed]
+        obfuscate [user_id, url_domain]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+data FolderNode : app v1 {
+    folder_id: string,
+    user_id: string,
+    name: string,
+    icon: u16,
+    parent_folder_id: string,
+    credential_count: u32,
+    created_at: u64,
+    updated_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/pass
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+    }
+
+data TagNode : app v1 {
+    tag_id: string,
+    user_id: string,
+    name: string,
+    color: u32,
+    created_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/pass
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+    }
+
+// ── Edge types ──────────────────────────────────────────────────
+
+type ContainsEdge = struct {
+    edge_id: bytes(16),
+    added_at: u64,
+    position: u32,
+}
+
+type TaggedWithEdge = struct {
+    edge_id: bytes(16),
+    tagged_at: u64,
+}
+
+type CredentialHistoryEdge = struct {
+    edge_id: bytes(16),
+    previous_password_hash: bytes(32),
+    rotated_at: u64,
+    rotation_reason: u8,
+}
+
+// ── State Machine ───────────────────────────────────────────────
+
+state_machine credential_lifecycle {
+    initial ACTIVE
+    persistence wal
+    terminal [DELETED]
+    li_anomaly_detection true
+
+    ACTIVE -> EXPIRED when password_age_exceeded guard age_policy_set
+    ACTIVE -> COMPROMISED when breach_detected
+    ACTIVE -> DELETED when user_deleted
+
+    EXPIRED -> ROTATED when user_rotated_password
+    EXPIRED -> COMPROMISED when breach_detected
+    EXPIRED -> DELETED when user_deleted
+
+    ROTATED -> ACTIVE when rotation_confirmed
+    ROTATED -> COMPROMISED when breach_detected
+
+    COMPROMISED -> ROTATED when user_rotated_password
+    COMPROMISED -> DELETED when user_deleted
+}
+
+// ── Graph definition ────────────────────────────────────────────
+
+graph vault_registry {
+    node CredentialNode
+    node FolderNode
+    node TagNode
+    edge ContainsEdge
+    edge TaggedWithEdge
+    edge CredentialHistoryEdge
+
+    overlay breach_status: u8 curate delta_curate
+    overlay password_age_days: u32 curate delta_curate
+    overlay strength_score: u8 curate delta_curate
+    overlay last_used_ns: u64 curate delta_curate
+    overlay autofill_count: u64 curate delta_curate
+
+    storage csr {
+        hot @bram,
+        warm @ddr,
+        cold @nvme,
+    }
+
+    ai_feed breach_alerting
+
+    observe vault_registry: [breach_status, strength_score, password_age_days] threshold: {
+        anomaly_score 0.85
+        baseline_window 120
+    }
+}
+
+series vault_series: vault_registry
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Circuits: Node insertion ────────────────────────────────────
+
+circuit create_credential(
+    user_pk: bytes(2592),
+    url_domain: string,
+    username_hash: string,
+    password_encrypted: string,
+    notes_encrypted: string,
+    totp_seed: string,
+    passkey_credential_id: string,
+    classification: u8,
+    strength: u8,
+    signing_sk: bytes(4896),
+) -> CredentialNode
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [credentials_created, credential_create_latency_ns]
+    monitor "credential_creation_rate" { credentials_created < 100/s }
+    invariant "valid_classification" { classification <= 2 }
+    invariant "domain_present" { len(url_domain) > 0 }
+    invariant "password_present" { len(password_encrypted) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now, csprng]
+    test golden "create_basic_credential" {
+        let pk = bytes(2592, 0xAA)
+        let sk = bytes(4896, 0xBB)
+        let cred = create_credential(pk, "github.com", "hash123", "enc_pw", "", "", "", 0, 80, sk)
+        assert len(cred.credential_id) > 0
+        assert cred.state == 0
+        assert cred.url_domain == "github.com"
+    }
+{
+    let user_id = polykit_identity::derive_user_id(user_pk)
+    let ts = now_ns() / 1000000
+    let cred_seed = concat(user_id, url_domain, csprng(16), ts)
+    let credential_id = sha3_256(cred_seed)
+
+    let cred = CredentialNode {
+        credential_id: credential_id,
+        user_id: user_id,
+        url_domain: url_domain,
+        username_hash: username_hash,
+        password_encrypted: password_encrypted,
+        notes_encrypted: notes_encrypted,
+        totp_seed: totp_seed,
+        passkey_credential_id: passkey_credential_id,
+        classification: classification,
+        state: 0,  // ACTIVE
+        created_at: ts,
+        updated_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(cred))
+    graph_insert(vault_registry, cred)
+
+    overlay_set(vault_registry, credential_id, breach_status, 0)
+    overlay_set(vault_registry, credential_id, password_age_days, 0)
+    overlay_set(vault_registry, credential_id, strength_score, strength)
+    overlay_set(vault_registry, credential_id, last_used_ns, ts * 1000000)
+    overlay_set(vault_registry, credential_id, autofill_count, 0)
+
+    polykit_metering::record_usage(user_id, "graph_credential_create", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 1024, observables: 5, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    cred
+}
+
+circuit update_credential(
+    credential_id: string,
+    user_id: string,
+    password_encrypted: option<string>,
+    notes_encrypted: option<string>,
+    totp_seed: option<string>,
+    passkey_credential_id: option<string>,
+    new_strength: option<u8>,
+    signing_sk: bytes(4896),
+) -> CredentialNode
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [credentials_updated, credential_update_latency_ns]
+    invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now_ns() / 1000000
+    let existing = graph_query(vault_registry, credential_id)
+
+    let updated = CredentialNode {
+        credential_id: existing.credential_id,
+        user_id: existing.user_id,
+        url_domain: existing.url_domain,
+        username_hash: existing.username_hash,
+        password_encrypted: if password_encrypted != none { unwrap(password_encrypted) } else { existing.password_encrypted },
+        notes_encrypted: if notes_encrypted != none { unwrap(notes_encrypted) } else { existing.notes_encrypted },
+        totp_seed: if totp_seed != none { unwrap(totp_seed) } else { existing.totp_seed },
+        passkey_credential_id: if passkey_credential_id != none { unwrap(passkey_credential_id) } else { existing.passkey_credential_id },
+        classification: existing.classification,
+        state: existing.state,
+        created_at: existing.created_at,
+        updated_at: ts,
+    }
+
+    if password_encrypted != none {
+        let history_edge = CredentialHistoryEdge {
+            edge_id: bit_slice(sha3_256(concat(credential_id, ts)), 0, 128),
+            previous_password_hash: sha3_256(existing.password_encrypted),
+            rotated_at: ts,
+            rotation_reason: 0,
+        }
+        graph_connect(vault_registry, credential_id, credential_id, history_edge)
+        overlay_set(vault_registry, credential_id, password_age_days, 0)
+
+        if new_strength != none {
+            overlay_set(vault_registry, credential_id, strength_score, unwrap(new_strength))
+        }
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(updated))
+    graph_update(vault_registry, updated)
+
+    polykit_metering::record_usage(user_id, "graph_credential_update", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 512, observables: 2, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    updated
+}
+
+circuit delete_credential(
+    credential_id: string,
+    user_id: string,
+    signing_sk: bytes(4896),
+) -> bool
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    observe metrics: [credentials_deleted]
+    invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_delete, now]
+{
+    let ts = now_ns() / 1000000
+    let _sig = mldsa_sign(signing_sk, concat(credential_id, "delete", ts))
+
+    // Transition state machine to DELETED
+    state_transition(credential_lifecycle, credential_id, user_deleted)
+
+    let existing = graph_query(vault_registry, credential_id)
+    let tombstone = CredentialNode {
+        credential_id: existing.credential_id,
+        user_id: existing.user_id,
+        url_domain: existing.url_domain,
+        username_hash: existing.username_hash,
+        password_encrypted: "",
+        notes_encrypted: "",
+        totp_seed: "",
+        passkey_credential_id: "",
+        classification: existing.classification,
+        state: 4,  // DELETED
+        created_at: existing.created_at,
+        updated_at: ts,
+    }
+    graph_update(vault_registry, tombstone)
+
+    true
+}
+
+circuit create_folder(
+    user_pk: bytes(2592),
+    name: string,
+    parent_folder_id: string,
+    icon: u16,
+    signing_sk: bytes(4896),
+) -> FolderNode
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    observe metrics: [folders_created]
+    invariant "name_present" { len(name) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now, csprng]
+{
+    let user_id = polykit_identity::derive_user_id(user_pk)
+    let ts = now_ns() / 1000000
+    let folder_id = sha3_256(concat(user_id, name, csprng(16), ts))
+
+    let folder = FolderNode {
+        folder_id: folder_id,
+        user_id: user_id,
+        name: name,
+        icon: icon,
+        parent_folder_id: parent_folder_id,
+        credential_count: 0,
+        created_at: ts,
+        updated_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(folder))
+    graph_insert(vault_registry, folder)
+
+    if len(parent_folder_id) > 0 {
+        let edge = ContainsEdge {
+            edge_id: bit_slice(sha3_256(concat(parent_folder_id, folder_id)), 0, 128),
+            added_at: ts,
+            position: 0,
+        }
+        graph_connect(vault_registry, parent_folder_id, folder_id, edge)
+    }
+
+    folder
+}
+
+circuit move_credential(
+    credential_id: string,
+    from_folder_id: string,
+    to_folder_id: string,
+    user_id: string,
+    signing_sk: bytes(4896),
+) -> bool
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    observe metrics: [credentials_moved]
+    invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
+    invariant "dest_exists" { graph_exists(vault_registry, to_folder_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let ts = now_ns() / 1000000
+
+    if len(from_folder_id) > 0 {
+        graph_disconnect(vault_registry, from_folder_id, credential_id, ContainsEdge)
+        overlay_decrement(vault_registry, from_folder_id, credential_count, 1)
+    }
+
+    let edge = ContainsEdge {
+        edge_id: bit_slice(sha3_256(concat(to_folder_id, credential_id, ts)), 0, 128),
+        added_at: ts,
+        position: 0,
+    }
+    graph_connect(vault_registry, to_folder_id, credential_id, edge)
+    overlay_increment(vault_registry, to_folder_id, credential_count, 1)
+
+    let _sig = mldsa_sign(signing_sk, concat(credential_id, to_folder_id, ts))
+
+    true
+}
+
+circuit record_autofill(
+    credential_id: string,
+    user_id: string,
+) -> bool
+    lex esn/global/org/polylabs/pass
+    status production
+    precision B
+    povc true
+    observe metrics: [autofill_records]
+    invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
+    wasm_abi [now]
+{
+    let ts = now_ns()
+    overlay_set(vault_registry, credential_id, last_used_ns, ts)
+    overlay_increment(vault_registry, credential_id, autofill_count, 1)
+    true
+}
+
+circuit update_breach_status(
+    credential_id: string,
+    is_breached: bool,
+    user_id: string,
+) -> bool
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    observe metrics: [breach_status_updates, breaches_flagged]
+    invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
+    wasm_abi [now]
+{
+    let status = if is_breached { 1 } else { 0 }
+    overlay_set(vault_registry, credential_id, breach_status, status)
+
+    if is_breached {
+        state_transition(credential_lifecycle, credential_id, breach_detected)
+        eslm_feed(breach_alerting, concat("breached:", credential_id), 900)
+    }
+
+    true
+}
+
+// ── Circuits: Query ─────────────────────────────────────────────
+
+circuit get_credential(
+    graph_id: bytes(32),
+    credential_id: string,
+) -> option<CredentialNode>
+    lex esn/global/org/polylabs/pass
+    status production
+    precision B
+    observe metrics: [credential_queries]
+{
+    graph_query(vault_registry, credential_id)
+}
+
+circuit get_credentials_for_user(
+    graph_id: bytes(32),
+    user_id: string,
+) -> list<CredentialNode>
+    lex esn/global/org/polylabs/pass
+    status production
+    precision B
+    observe metrics: [user_credential_queries, credentials_returned]
+    test golden "empty_vault_returns_empty" {
+        let creds = get_credentials_for_user(bytes(32, 0x01), "NONEXIST")
+        assert creds == []
+    }
+{
+    graph_query_by_field(vault_registry, CredentialNode, user_id, user_id)
+}
+
+circuit get_folders_for_user(
+    graph_id: bytes(32),
+    user_id: string,
+) -> list<FolderNode>
+    lex esn/global/org/polylabs/pass
+    status production
+    precision B
+    observe metrics: [folder_queries]
+{
+    graph_query_by_field(vault_registry, FolderNode, user_id, user_id)
+}
+
+// ── Circuits: Quantum State Snapshot ────────────────────────────
+
+circuit snapshot_vault_state(
+    user_id: string,
+    signing_sk: bytes(4896),
+) -> string
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    observe metrics: [vault_snapshots, snapshot_size_bytes]
+{
+    let credentials = graph_query_by_field(vault_registry, CredentialNode, user_id, user_id)
+    let folders = graph_query_by_field(vault_registry, FolderNode, user_id, user_id)
+
+    let breached = 0
+    let weak = 0
+    let total_strength = 0
+    for cred in credentials {
+        let bs = overlay_get(vault_registry, cred.credential_id, breach_status)
+        let ss = overlay_get(vault_registry, cred.credential_id, strength_score)
+        if bs > 0 { breached = breached + 1 }
+        if ss < 50 { weak = weak + 1 }
+        total_strength = total_strength + ss
+    }
+
+    let avg_strength = if len(credentials) > 0 { total_strength / len(credentials) } else { 0 }
+
+    let snapshot_payload = serialize({
+        user_id: user_id,
+        credential_count: len(credentials),
+        folder_count: len(folders),
+        breached_count: breached,
+        weak_count: weak,
+        avg_strength: avg_strength,
+        timestamp: now_ns() / 1000000,
+    })
+
+    let snapshot_hash = sha3_256(snapshot_payload)
+    let _sig = mldsa_sign(signing_sk, snapshot_payload)
+
+    snapshot_hash
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream vault_graph_mutations: event<CredentialNode>
+    retention 7y
+    consumers [governance, audit, streamsight, pass_security]
+
+stream credential_state_events: event<CredentialNode>
+    retention 365d
+    consumers [streamsight, console, pass_security]

@@ -1,0 +1,153 @@
+# Poly Pass — ESCX Test Vectors
+# Validates vault operations, credential management, breach checks,
+# share grants, encryption, and blind telemetry isolation
+
+circuit_id: esn.polylabs.polypass
+test_name: polypass_core
+vector_count: 7
+
+vectors:
+  - name: "happy path — store and retrieve credential"
+    category: happy_path
+    inputs:
+      operation: "vault_store"
+      vault_id: "vault-001"
+      credential:
+        site: "example.com"
+        username: "alice"
+        password_encrypted: "ML-KEM-1024:0xdeadbeef..."
+        tags: ["work", "email"]
+      spark_identity: "spark-polypass-v1:alice-prime-id"
+      biometric_attestation: { method: "fingerprint", confidence: 0.99, attested: true }
+    expected_outputs:
+      status: "stored"
+      vault_entry_id: "entry-001"
+      encrypted: true
+      credential_stores_counter: 1
+      vault_operations_counter: 1
+    pass_criteria:
+      credential_persisted: true
+      encryption_applied: true
+      counters_incremented: true
+
+  - name: "happy path — autofill credential for matching site"
+    category: happy_path
+    inputs:
+      operation: "credential_autofill"
+      vault_id: "vault-001"
+      site_origin: "https://example.com/login"
+      spark_identity: "spark-polypass-v1:alice-prime-id"
+    expected_outputs:
+      status: "matched"
+      matched_entries: 1
+      autofill_hint:
+        site: "example.com"
+        username: "alice"
+        password_decrypted: false
+      autofill_events_counter: 1
+    pass_criteria:
+      site_matched: true
+      password_not_leaked_in_hint: true
+      counter_incremented: true
+
+  - name: "edge case — vault at max capacity (10000 entries)"
+    category: edge_case
+    inputs:
+      operation: "vault_store"
+      vault_id: "vault-full"
+      existing_entry_count: 10000
+      credential:
+        site: "overflow.com"
+        username: "bob"
+        password_encrypted: "ML-KEM-1024:0xcafebabe..."
+      spark_identity: "spark-polypass-v1:bob-prime-id"
+    expected_outputs:
+      status: "rejected"
+      error_code: "E_VAULT_CAPACITY"
+      vault_operations_counter: 0
+    pass_criteria:
+      capacity_enforced: true
+      no_partial_write: true
+      counter_not_incremented: true
+
+  - name: "crypto — ML-KEM-1024 encrypt/decrypt round-trip"
+    category: crypto
+    inputs:
+      operation: "vault_encrypt"
+      plaintext: "s3cretP@ssw0rd!"
+      key_context: "poly-pass-v1"
+      spark_identity: "spark-polypass-v1:carol-prime-id"
+    expected_outputs:
+      ciphertext_length_min: 32
+      algorithm: "ML-KEM-1024"
+      decrypt_matches_plaintext: true
+      encrypt_ops_counter: 1
+    pass_criteria:
+      round_trip_fidelity: true
+      pq_algorithm_used: true
+      no_plaintext_in_ciphertext: true
+
+  - name: "crypto — breach check against known-compromised hash set"
+    category: crypto
+    inputs:
+      operation: "breach_check"
+      credential_hash: "sha3-256:a4f3b2c1d0e9f8..."
+      breach_database_version: "2026-02-01"
+      spark_identity: "spark-polypass-v1:dave-prime-id"
+    expected_outputs:
+      breached: true
+      breach_source_count: 2
+      severity: "high"
+      recommendation: "change_immediately"
+      breach_checks_counter: 1
+    pass_criteria:
+      breach_detected: true
+      no_plaintext_exposed: true
+      severity_rated: true
+
+  - name: "blind telemetry isolation — polypass metrics never leak to other products"
+    category: telemetry_isolation
+    inputs:
+      operation: "vault_store"
+      vault_id: "vault-isolation-test"
+      credential:
+        site: "isolated.com"
+        username: "eve"
+        password_encrypted: "ML-KEM-1024:0x1234abcd..."
+      spark_identity: "spark-polypass-v1:eve-prime-id"
+      telemetry_context:
+        lex_namespace: "esn/polylabs/polypass"
+        hkdf_context: "poly-pass-v1"
+    expected_outputs:
+      telemetry_emitted: true
+      telemetry_namespace: "esn/polylabs/polypass"
+      cross_product_leakage: false
+      metrics_visible_to_polymessenger: false
+      metrics_visible_to_polyoauth: false
+      metrics_visible_to_polymind: false
+      hkdf_context_isolated: true
+    pass_criteria:
+      lex_namespace_scoped: true
+      no_cross_product_fanup: true
+      hkdf_derivation_independent: true
+      blind_to_sibling_products: true
+
+  - name: "error handling — share grant to revoked identity"
+    category: error_handling
+    inputs:
+      operation: "share_credential"
+      vault_id: "vault-001"
+      entry_id: "entry-001"
+      recipient_identity: "spark-polypass-v1:revoked-user"
+      recipient_status: "revoked"
+      spark_identity: "spark-polypass-v1:alice-prime-id"
+    expected_outputs:
+      status: "rejected"
+      error_code: "E_RECIPIENT_REVOKED"
+      share_grants_counter: 0
+      credential_exposed: false
+    pass_criteria:
+      revoked_recipient_blocked: true
+      no_credential_leakage: true
+      error_code_specific: true
+      counter_not_incremented: true

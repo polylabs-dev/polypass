@@ -1,0 +1,264 @@
+/// Poly Pass Platform Health — Blind relay telemetry for vault operations
+///
+/// Aggregates platform-wide health metrics under zero-linkage privacy:
+///   - SPARK identity blinded via HKDF("poly-pass-telemetry-v1")
+///   - k-Anonymity cohort enforcement (min 50 users)
+///   - Differential privacy noise on all emitted metrics
+///   - Temporal aggregation (1h minimum window)
+///
+/// Lex Architecture:
+///   esn/global/org/polylabs/pass
+///     └── sub_lex vault fan_in  ← per-vault health; aggregates fan up
+///
+/// govern lex esn/global/org/polylabs/pass
+
+import polykit_blind_telemetry from "../../polykit/circuits/fl/polykit_blind_telemetry.fl"
+import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+
+// ── Data Declarations with Stratum + Cortex ─────────────────────────
+
+data PlatformMetrics : app v1 {
+    blinded_pass_id: bytes(32),
+    window_start_ms: u64,
+    window_end_ms: u64,
+    cohort_size: u32,
+    platform_queries: u64,
+    active_vaults: u64,
+    credential_operations: u64,
+    autofill_events: u64,
+    breach_checks: u64,
+    sync_operations: u64,
+    snapshot_hash: bytes(32),
+    collected_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/pass
+    cortex {
+        obfuscate [blinded_pass_id]
+        infer on_write
+        on_anomaly alert "pass-team"
+    }
+
+data PassHealthSnapshot : app v1 {
+    period_start_ms: u64,
+    period_end_ms: u64,
+    total_queries: u64,
+    total_vaults: u64,
+    total_credential_ops: u64,
+    total_autofills: u64,
+    total_breach_checks: u64,
+    total_syncs: u64,
+    anomaly_score: u64,
+    baseline_queries: u64,
+    baseline_vaults: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/pass
+    cortex {
+        infer on_read
+    }
+
+type PassHealthStatus = enum {
+    Healthy,
+    Degraded,
+    Critical,
+}
+
+// ── Streams ─────────────────────────────────────────────────────────
+
+stream pass_health_events: event<PlatformMetrics>
+    retention 365d
+    consumers [streamsight, audit_trail, governance]
+    classify blinded_pass_id: METADATA, cohort_size: METADATA
+
+stream pass_anomaly_events: event<PassHealthSnapshot>
+    retention forever
+    consumers [streamsight, governance, alerting]
+
+// ── Series ──────────────────────────────────────────────────────────
+
+series pass_health_series: pass_health_events
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Core Circuit: Platform Health ───────────────────────────────────
+
+circuit polypass_platform_health(
+    spark_id: bytes(32),
+    active_user_count: u32,
+    window_start_ms: u64,
+    window_end_ms: u64,
+    platform_queries: u64,
+    active_vaults: u64,
+    credential_operations: u64,
+    autofill_events: u64,
+    breach_checks: u64,
+    sync_operations: u64,
+) -> option<PlatformMetrics>
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass {
+        governance hierarchical
+        audit_trail true
+        sub_lex vault fan_in
+    }
+    status production
+    precision C
+    streamsight true
+    povc true
+    constant_time true
+    esz_emit "verify/polypass_platform_health.esz"
+    li_feed full_escir true, optimized_ir true, optimization_metadata true
+    observe metrics: [health_snapshots_emitted, health_snapshots_rejected, pass_anomalies_detected]
+    monitor "breach_check_rate" { breach_checks < 5000/hr }
+    monitor "health_emission_rate" { health_snapshots_emitted < 60/hr }
+    invariant "cohort_enforced" { active_user_count >= 50 }
+    invariant "window_enforced" { window_end_ms - window_start_ms >= 3600000 }
+    invariant "no_raw_identity" { output contains no spark_id bits }
+    property safety "emission_isolation" { no_cross_product_data }
+    property safety "no_content_leak" { batch contains only numeric aggregates }
+    property liveness "eventually_emits" { eventually(health_snapshots_emitted > 0) when cohort healthy }
+    meters [compute_cycles, memory_bytes, bandwidth_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
+    fuzz_target
+    test golden "full_health_pipeline" {
+        let spark = bytes(32, 0xAA)
+        let result = polypass_platform_health(spark, 75, 0, 3600000, 100, 50, 200, 80, 10, 30)
+        assert result != none
+    }
+    test golden "rejects_small_cohort" {
+        let spark = bytes(32, 0xBB)
+        let result = polypass_platform_health(spark, 20, 0, 3600000, 50, 10, 30, 5, 2, 1)
+        assert result == none
+    }
+    test golden "rejects_short_window" {
+        let spark = bytes(32, 0xCC)
+        let result = polypass_platform_health(spark, 100, 0, 1800000, 50, 10, 30, 5, 2, 1)
+        assert result == none
+    }
+{
+    let ts = now_ns() / 1000000
+
+    let blinded_id = polykit_blind_telemetry::blind_user_id(spark_id, "poly-pass-telemetry-v1")
+
+    let (cohort_status, cohort_ok) = polykit_blind_telemetry::enforce_cohort(active_user_count, 50)
+    if !cohort_ok { return none }
+
+    let window_ok = polykit_blind_telemetry::enforce_aggregate_window(window_start_ms, window_end_ms, 3600000)
+    if !window_ok { return none }
+
+    let noised_queries = polykit_blind_telemetry::inject_noise(platform_queries, 1, 1000)
+    let noised_vaults = polykit_blind_telemetry::inject_noise(active_vaults, 1, 1000)
+    let noised_cred_ops = polykit_blind_telemetry::inject_noise(credential_operations, 1, 1000)
+    let noised_autofills = polykit_blind_telemetry::inject_noise(autofill_events, 1, 1000)
+    let noised_breach = polykit_blind_telemetry::inject_noise(breach_checks, 1, 1000)
+    let noised_syncs = polykit_blind_telemetry::inject_noise(sync_operations, 1, 1000)
+
+    let anomaly = streamsight_anomaly(breach_checks)
+    let baseline = streamsight_baseline("breach_checks")
+    if anomaly > 0.85 {
+        emit(pass_anomaly_events, PassHealthSnapshot {
+            period_start_ms: window_start_ms,
+            period_end_ms: window_end_ms,
+            total_queries: noised_queries,
+            total_vaults: noised_vaults,
+            total_credential_ops: noised_cred_ops,
+            total_autofills: noised_autofills,
+            total_breach_checks: noised_breach,
+            total_syncs: noised_syncs,
+            anomaly_score: anomaly * 1000,
+            baseline_queries: baseline,
+            baseline_vaults: 0,
+        })
+    }
+
+    let payload = serialize(blinded_id, window_start_ms, window_end_ms, noised_queries, noised_vaults)
+    let snap_hash = sha3_256(payload)
+
+    let metrics = PlatformMetrics {
+        blinded_pass_id: blinded_id,
+        window_start_ms: window_start_ms,
+        window_end_ms: window_end_ms,
+        cohort_size: active_user_count,
+        platform_queries: noised_queries,
+        active_vaults: noised_vaults,
+        credential_operations: noised_cred_ops,
+        autofill_events: noised_autofills,
+        breach_checks: noised_breach,
+        sync_operations: noised_syncs,
+        snapshot_hash: snap_hash,
+        collected_at: ts,
+    }
+
+    emit(pass_health_events, metrics)
+    eslite_insert("pass_health_snapshots", snap_hash, metrics)
+
+    zeroize(spark_id)
+    some(metrics)
+}
+
+// ── Secondary Circuit: Anomaly Check with Cortex AI Feed ────────────
+
+circuit polypass_anomaly_check(
+    window_start_ms: u64,
+    window_end_ms: u64,
+    breach_checks: u64,
+    credential_operations: u64,
+    autofill_events: u64,
+) -> PassHealthStatus
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass {
+        sub_lex vault fan_in
+    }
+    status production
+    precision B
+    streamsight true
+    povc true
+    observe metrics: [anomaly_checks, anomaly_triggers, degraded_periods, critical_periods]
+    monitor "anomaly_trigger_rate" { anomaly_triggers < 100/hr }
+    invariant "valid_window" { window_end_ms > window_start_ms }
+    property safety "no_false_critical" { critical implies anomaly > 0.9 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, now]
+    cortex {
+        ai_feed true
+        infer on_write
+        on_anomaly alert "pass-team"
+    }
+    test golden "healthy_state" {
+        let status = polypass_anomaly_check(0, 3600000, 100, 500, 200)
+        assert status == PassHealthStatus::Healthy
+    }
+    test golden "degraded_state" {
+        let status = polypass_anomaly_check(0, 3600000, 4000, 500, 200)
+        assert status == PassHealthStatus::Degraded
+    }
+{
+    let breach_anomaly = streamsight_anomaly(breach_checks)
+    let breach_baseline = streamsight_baseline("breach_checks")
+    let cred_anomaly = streamsight_anomaly(credential_operations)
+    let autofill_anomaly = streamsight_anomaly(autofill_events)
+
+    let combined_score = (breach_anomaly * 0.5) + (cred_anomaly * 0.3) + (autofill_anomaly * 0.2)
+
+    if combined_score > 0.9 {
+        emit(pass_anomaly_events, PassHealthSnapshot {
+            period_start_ms: window_start_ms,
+            period_end_ms: window_end_ms,
+            total_queries: 0,
+            total_vaults: 0,
+            total_credential_ops: credential_operations,
+            total_autofills: autofill_events,
+            total_breach_checks: breach_checks,
+            total_syncs: 0,
+            anomaly_score: combined_score * 1000,
+            baseline_queries: breach_baseline,
+            baseline_vaults: 0,
+        })
+        PassHealthStatus::Critical
+    } else if combined_score > 0.6 {
+        PassHealthStatus::Degraded
+    } else {
+        PassHealthStatus::Healthy
+    }
+}

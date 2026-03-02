@@ -1,0 +1,563 @@
+/// Poly Pass Share Graph — Stratum graph storage + Cortex AI governance
+/// Sharing relationships: users, shared vaults, credentials as nodes;
+/// share permissions as typed edges with access levels
+/// govern lex esn/global/org/polylabs/pass
+
+import polykit_identity
+import polykit_metering
+import polykit_governance
+
+// ── Enums ───────────────────────────────────────────────────────
+
+type ShareRole = enum {
+    Viewer,
+    Editor,
+    Admin,
+    Owner,
+}
+
+type ShareLifecycleState = enum {
+    Pending,
+    Active,
+    Revoked,
+    Expired,
+}
+
+// ── Data: Node types (Stratum store graph + Cortex) ─────────────
+
+data ShareUserNode : app v1 {
+    user_id: string,
+    display_name_hash: string,
+    email: string,
+    signing_pubkey: string,
+    encryption_pubkey: string,
+    trust_score: u16,
+    joined_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/pass
+    cortex {
+        redact [email]
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+data SharedVaultNode : app v1 {
+    vault_id: string,
+    owner_id: string,
+    name: string,
+    description: string,
+    max_members: u32,
+    member_count: u32,
+    credential_count: u32,
+    vault_key_hash: string,
+    enterprise_org_id: string,
+    created_at: u64,
+    updated_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/pass
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+data SharedCredentialNode : app v1 {
+    credential_id: string,
+    vault_id: string,
+    wrapped_key: string,
+    added_by: string,
+    classification: u8,
+    created_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/pass
+    cortex {
+        redact [wrapped_key]
+        obfuscate [added_by]
+        infer on_write
+    }
+
+// ── Edge types ──────────────────────────────────────────────────
+
+type MemberOfEdge = struct {
+    edge_id: bytes(16),
+    role: u8,
+    joined_at: u64,
+    invited_by: bytes(16),
+    wrapped_vault_key: bytes(1568),
+}
+
+type CredentialAccessEdge = struct {
+    edge_id: bytes(16),
+    permission: u8,
+    granted_at: u64,
+    granted_by: bytes(16),
+    expires_at: u64,
+}
+
+type SharedWithEdge = struct {
+    edge_id: bytes(16),
+    recipient_id: bytes(16),
+    wrapped_key: bytes(1568),
+    permission: u8,
+    granted_at: u64,
+    granted_by: bytes(16),
+    expires_at: u64,
+    state: u8,
+}
+
+type InvitationEdge = struct {
+    edge_id: bytes(16),
+    sender_id: bytes(16),
+    recipient_pubkey: bytes(1568),
+    invitation_token_hash: bytes(32),
+    expires_at: u64,
+    created_at: u64,
+}
+
+// ── State Machine ───────────────────────────────────────────────
+
+state_machine share_lifecycle {
+    initial PENDING
+    persistence wal
+    terminal [REVOKED, EXPIRED]
+    li_anomaly_detection true
+
+    PENDING -> ACTIVE when signature_verified guard acl_signed
+    PENDING -> EXPIRED when ttl_expired
+    PENDING -> REVOKED when owner_revoked
+
+    ACTIVE -> REVOKED when owner_revoked
+    ACTIVE -> EXPIRED when ttl_expired
+    ACTIVE -> ACTIVE when permission_updated guard acl_signed
+}
+
+// ── Graph definition ────────────────────────────────────────────
+
+graph share_network {
+    node ShareUserNode
+    node SharedVaultNode
+    node SharedCredentialNode
+    edge MemberOfEdge
+    edge CredentialAccessEdge
+    edge SharedWithEdge
+    edge InvitationEdge
+
+    overlay permission_level: u8 curate delta_curate
+    overlay access_count: u32 curate delta_curate
+    overlay last_accessed_ns: u64 curate delta_curate
+    overlay member_count: u32 curate delta_curate
+    overlay trust_score: u16 curate delta_curate
+
+    storage csr {
+        hot @bram,
+        warm @ddr,
+        cold @nvme,
+    }
+
+    ai_feed share_anomaly
+
+    observe share_network: [permission_level, access_count, trust_score] threshold: {
+        anomaly_score 0.90
+        baseline_window 300
+    }
+}
+
+series share_series: share_network
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Circuits: Node insertion ────────────────────────────────────
+
+circuit register_share_user(
+    user_pk: bytes(2592),
+    encryption_pk: bytes(1568),
+    display_name_hash: string,
+    email: string,
+    signing_sk: bytes(4896),
+) -> ShareUserNode
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [share_users_registered]
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+    monitor "share_user_registration_rate" { share_users_registered < 50/s }
+    test golden "register_share_user" {
+        let pk = bytes(2592, 0xAA)
+        let epk = bytes(1568, 0xCC)
+        let sk = bytes(4896, 0xBB)
+        let user = register_share_user(pk, epk, "name_hash", "enc_email", sk)
+        assert len(user.user_id) > 0
+    }
+{
+    let user_id = polykit_identity::derive_user_id(user_pk)
+    let ts = now_ns() / 1000000
+
+    let user = ShareUserNode {
+        user_id: user_id,
+        display_name_hash: display_name_hash,
+        email: email,
+        signing_pubkey: hex_encode(user_pk),
+        encryption_pubkey: hex_encode(encryption_pk),
+        trust_score: 500,
+        joined_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(user))
+    graph_insert(share_network, user)
+    overlay_set(share_network, user_id, trust_score, 500)
+
+    user
+}
+
+circuit create_shared_vault(
+    owner_pk: bytes(2592),
+    name: string,
+    description: string,
+    max_members: u32,
+    enterprise_org_id: string,
+    signing_sk: bytes(4896),
+) -> SharedVaultNode
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    observe metrics: [shared_vaults_created, shared_vault_create_latency_ns]
+    invariant "name_present" { len(name) > 0 }
+    invariant "max_members_valid" { max_members >= 2 and max_members <= 1000 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now, csprng]
+    test golden "create_family_vault" {
+        let pk = bytes(2592, 0xAA)
+        let sk = bytes(4896, 0xBB)
+        let vault = create_shared_vault(pk, "Family", "Shared family vault", 6, "", sk)
+        assert vault.max_members == 6
+        assert vault.member_count == 1
+    }
+{
+    let owner_id = polykit_identity::derive_user_id(owner_pk)
+    let ts = now_ns() / 1000000
+    let vault_seed = concat(owner_id, name, csprng(16), ts)
+    let vault_id = sha3_256(vault_seed)
+    let vault_key = csprng(32)
+    let vault_key_hash = sha3_256(vault_key)
+
+    let vault = SharedVaultNode {
+        vault_id: vault_id,
+        owner_id: owner_id,
+        name: name,
+        description: description,
+        max_members: max_members,
+        member_count: 1,
+        credential_count: 0,
+        vault_key_hash: hex_encode(vault_key_hash),
+        enterprise_org_id: enterprise_org_id,
+        created_at: ts,
+        updated_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(vault))
+    graph_insert(share_network, vault)
+
+    // Owner is first member with Admin role
+    let member_edge = MemberOfEdge {
+        edge_id: bit_slice(sha3_256(concat(owner_id, vault_id)), 0, 128),
+        role: 3,  // Owner
+        joined_at: ts,
+        invited_by: owner_id,
+        wrapped_vault_key: zero(1568),
+    }
+    graph_connect(share_network, owner_id, vault_id, member_edge)
+
+    overlay_set(share_network, vault_id, member_count, 1)
+
+    polykit_metering::record_usage(owner_id, "graph_shared_vault_create", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: 0,
+        storage: 1024, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    vault
+}
+
+circuit invite_to_vault(
+    vault_id: string,
+    inviter_id: string,
+    recipient_pubkey: bytes(1568),
+    vault_key: bytes(32),
+    role: u8,
+    signing_sk: bytes(4896),
+) -> InvitationEdge
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [vault_invitations_sent, invitation_latency_ns]
+    invariant "vault_exists" { graph_exists(share_network, vault_id) }
+    invariant "valid_role" { role <= 3 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [csprng, now]
+{
+    let ts = now_ns() / 1000000
+    let token = csprng(32)
+    let token_hash = sha3_256(token)
+
+    let kem = mlkem_encaps(recipient_pubkey)
+    let wrap_key = hkdf_sha3(kem.shared_secret, "vault-invite-wrap", 32)
+    let _wrapped_vault_key = aes_keywrap(wrap_key, vault_key)
+
+    let invitation = InvitationEdge {
+        edge_id: bit_slice(sha3_256(concat(inviter_id, vault_id, token)), 0, 128),
+        sender_id: inviter_id,
+        recipient_pubkey: recipient_pubkey,
+        invitation_token_hash: token_hash,
+        expires_at: ts + 604800000,  // 7 days
+        created_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(invitation))
+    graph_connect(share_network, inviter_id, vault_id, invitation)
+
+    polykit_metering::record_usage(inviter_id, "graph_vault_invite", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: 1568,
+        storage: 256, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    invitation
+}
+
+circuit accept_vault_invitation(
+    vault_id: string,
+    user_id: string,
+    user_pk: bytes(2592),
+    user_sk: bytes(3168),
+    invitation: InvitationEdge,
+    role: u8,
+    signing_sk: bytes(4896),
+) -> MemberOfEdge
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [vault_invitations_accepted]
+    invariant "vault_exists" { graph_exists(share_network, vault_id) }
+    invariant "not_expired" { invitation.expires_at > now_ns() / 1000000 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let ts = now_ns() / 1000000
+
+    let vault = graph_query(share_network, vault_id)
+    if vault.member_count >= vault.max_members {
+        panic("vault_member_limit_reached")
+    }
+
+    let shared_secret = mlkem_decaps(user_sk, invitation.recipient_pubkey)
+    let _unwrap_key = hkdf_sha3(shared_secret, "vault-invite-wrap", 32)
+
+    let member_edge = MemberOfEdge {
+        edge_id: bit_slice(sha3_256(concat(user_id, vault_id, ts)), 0, 128),
+        role: role,
+        joined_at: ts,
+        invited_by: invitation.sender_id,
+        wrapped_vault_key: invitation.recipient_pubkey,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(member_edge))
+    graph_connect(share_network, user_id, vault_id, member_edge)
+
+    overlay_increment(share_network, vault_id, member_count, 1)
+
+    // Transition share lifecycle
+    state_transition(share_lifecycle, member_edge.edge_id, signature_verified)
+
+    polykit_metering::record_usage(user_id, "graph_vault_accept", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
+    })
+
+    member_edge
+}
+
+circuit revoke_vault_member(
+    vault_id: string,
+    member_id: string,
+    revoker_id: string,
+    signing_sk: bytes(4896),
+) -> bool
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    observe metrics: [vault_members_revoked]
+    invariant "vault_exists" { graph_exists(share_network, vault_id) }
+    invariant "not_self_revoke_owner" { member_id != revoker_id or graph_query(share_network, vault_id).owner_id != member_id }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let ts = now_ns() / 1000000
+
+    let edge = graph_get_edge(share_network, member_id, vault_id, MemberOfEdge)
+    state_transition(share_lifecycle, edge.edge_id, owner_revoked)
+
+    graph_disconnect(share_network, member_id, vault_id, MemberOfEdge)
+    overlay_decrement(share_network, vault_id, member_count, 1)
+
+    let _sig = mldsa_sign(signing_sk, concat(vault_id, member_id, "revoke", ts))
+
+    eslm_feed(share_anomaly, concat("member_revoked:", vault_id, ":", member_id), 0)
+
+    polykit_metering::record_usage(revoker_id, "graph_vault_revoke", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 0, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    true
+}
+
+circuit share_credential_to_vault(
+    vault_id: string,
+    credential_id: string,
+    wrapped_key: string,
+    sharer_id: string,
+    classification: u8,
+    signing_sk: bytes(4896),
+) -> SharedCredentialNode
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [credentials_shared_to_vault]
+    invariant "vault_exists" { graph_exists(share_network, vault_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now_ns() / 1000000
+
+    let shared_cred = SharedCredentialNode {
+        credential_id: credential_id,
+        vault_id: vault_id,
+        wrapped_key: wrapped_key,
+        added_by: sharer_id,
+        classification: classification,
+        created_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(shared_cred))
+    graph_insert(share_network, shared_cred)
+
+    let access_edge = CredentialAccessEdge {
+        edge_id: bit_slice(sha3_256(concat(credential_id, vault_id)), 0, 128),
+        permission: 1,  // ReadWrite for vault members
+        granted_at: ts,
+        granted_by: sharer_id,
+        expires_at: 0,  // No expiry within vault
+    }
+    graph_connect(share_network, vault_id, credential_id, access_edge)
+
+    overlay_set(share_network, credential_id, access_count, 0)
+    overlay_set(share_network, credential_id, last_accessed_ns, ts * 1000000)
+
+    shared_cred
+}
+
+// ── Circuits: Query ─────────────────────────────────────────────
+
+circuit get_vault_members(
+    graph_id: bytes(32),
+    vault_id: string,
+) -> list<ShareUserNode>
+    lex esn/global/org/polylabs/pass
+    status production
+    precision B
+    observe metrics: [vault_member_queries]
+{
+    graph_traverse(share_network, vault_id, MemberOfEdge)
+}
+
+circuit get_shared_credentials(
+    graph_id: bytes(32),
+    vault_id: string,
+) -> list<SharedCredentialNode>
+    lex esn/global/org/polylabs/pass
+    status production
+    precision B
+    observe metrics: [shared_credential_queries]
+{
+    graph_traverse(share_network, vault_id, CredentialAccessEdge)
+}
+
+circuit get_user_vaults(
+    graph_id: bytes(32),
+    user_id: string,
+) -> list<SharedVaultNode>
+    lex esn/global/org/polylabs/pass
+    status production
+    precision B
+    observe metrics: [user_vault_queries]
+    test golden "no_vaults_returns_empty" {
+        let vaults = get_user_vaults(bytes(32, 0x01), "NONEXIST")
+        assert vaults == []
+    }
+{
+    graph_traverse(share_network, user_id, MemberOfEdge)
+}
+
+// ── Circuits: Quantum State Snapshot ────────────────────────────
+
+circuit snapshot_share_state(
+    user_id: string,
+    signing_sk: bytes(4896),
+) -> string
+    lex esn/global/org/polylabs/pass
+    status production
+    precision C
+    povc true
+    observe metrics: [share_snapshots]
+{
+    let vaults = graph_traverse(share_network, user_id, MemberOfEdge)
+
+    let total_members = 0
+    let total_shared_creds = 0
+    for vault in vaults {
+        let mc = overlay_get(share_network, vault.vault_id, member_count)
+        total_members = total_members + mc
+        total_shared_creds = total_shared_creds + vault.credential_count
+    }
+
+    let snapshot_payload = serialize({
+        user_id: user_id,
+        vault_count: len(vaults),
+        total_members: total_members,
+        total_shared_credentials: total_shared_creds,
+        timestamp: now_ns() / 1000000,
+    })
+
+    let snapshot_hash = sha3_256(snapshot_payload)
+    let _sig = mldsa_sign(signing_sk, snapshot_payload)
+
+    snapshot_hash
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream share_graph_mutations: event<SharedVaultNode>
+    retention 7y
+    consumers [governance, audit, streamsight, pass_security]
+
+stream share_access_events: event<SharedCredentialNode>
+    retention 365d
+    consumers [streamsight, console, pass_security]
+
+stream vault_membership_events: event<MemberOfEdge>
+    retention 365d
+    consumers [streamsight, console, governance]

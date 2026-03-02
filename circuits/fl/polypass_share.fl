@@ -1,0 +1,314 @@
+/// Poly Pass Share — Credential sharing with ML-KEM-1024 key re-wrapping
+/// Per-recipient key wrapping, shared vaults, revocation
+/// govern lex esn/global/org/polylabs/pass
+
+import polykit_identity
+import polykit_metering
+
+// ── Types ───────────────────────────────────────────────────────
+
+type ShareInvitation = struct {
+    invitation_id: bytes(16),
+    sender_id: bytes(16),
+    recipient_pubkey: bytes(1568),
+    credential_id: bytes(16),
+    wrapped_key: bytes(1568),
+    permission: u8,
+    expires_at: u64,
+    signature: bytes(4627),
+    created_at: u64,
+}
+
+type SharedCredential = struct {
+    credential_id: bytes(16),
+    owner_id: bytes(16),
+    recipient_id: bytes(16),
+    wrapped_key: bytes(1568),
+    permission: u8,
+    state: u8,
+    shared_at: u64,
+}
+
+type SharedVault = struct {
+    vault_id: bytes(16),
+    name: bytes(128),
+    owner_id: bytes(16),
+    member_count: u32,
+    max_members: u32,
+    created_at: u64,
+}
+
+type RewrapResult = struct {
+    credential_id: bytes(16),
+    recipient_id: bytes(16),
+    new_wrapped_key: bytes(1568),
+    rewrapped_at: u64,
+}
+
+// ── Enums ───────────────────────────────────────────────────────
+
+type SharePermission = enum {
+    ReadOnly,
+    ReadWrite,
+    Admin,
+}
+
+type ShareState = enum {
+    Pending,
+    Active,
+    Revoked,
+    Expired,
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream share_events: event<SharedCredential>
+    retention 7y
+    consumers [streamsight, governance, audit]
+
+stream share_invitations: event<ShareInvitation>
+    retention 90d
+    consumers [streamsight, console]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit share_credential(
+    sender_id: bytes(16),
+    credential_id: bytes(16),
+    credential_key: bytes(32),
+    recipient_pubkey: bytes(1568),
+    permission: u8,
+    ttl_days: u32,
+    signing_sk: bytes(4896),
+) -> ShareInvitation
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/share
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [shares_created, share_latency_ns]
+    monitor "share_rate" { shares_created < 50/s }
+    invariant "key_nonzero" { credential_key != zero(32) }
+    invariant "valid_permission" { permission <= 2 }
+    invariant "valid_ttl" { ttl_days > 0 and ttl_days <= 3650 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [csprng, now]
+    test golden "share_read_only" {
+        let sk = bytes(4896, 0xBB)
+        let rpk = bytes(1568, 0xCC)
+        let inv = share_credential(bytes(16, 0x01), bytes(16, 0x02), bytes(32, 0xAA), rpk, 0, 30, sk)
+        assert len(inv.wrapped_key) == 1568
+        assert inv.permission == 0
+    }
+    kat_vector "mlkem_encaps_share" {
+        pk: bytes(1568, 0xCC)
+        function: mlkem_encaps
+    }
+    kat_vector "hkdf_sha3_share_wrap" {
+        ikm: bytes(32, 0xAA)
+        info: "share-key-wrap"
+        length: 32
+        function: hkdf_sha3
+    }
+    kat_vector "mldsa_sign_share" {
+        sk: bytes(4896, 0xBB)
+        message: bytes(128, 0xCC)
+        function: mldsa_sign
+    }
+{
+    let ts = now_ns() / 1000000
+    let kem = mlkem_encaps(recipient_pubkey)
+    let wrap_key = hkdf_sha3(kem.shared_secret, "share-key-wrap", 32)
+    let wrapped = aes_keywrap(wrap_key, credential_key)
+
+    let invitation_id = bit_slice(sha3_256(concat(sender_id, credential_id, csprng(16))), 0, 128)
+    let expires_at = ts + (ttl_days * 86400000)
+
+    let payload = concat(invitation_id, sender_id, credential_id, wrapped, permission, expires_at)
+    let sig = mldsa_sign(signing_sk, payload)
+
+    let invitation = ShareInvitation {
+        invitation_id: invitation_id,
+        sender_id: sender_id,
+        recipient_pubkey: recipient_pubkey,
+        credential_id: credential_id,
+        wrapped_key: kem.ciphertext,
+        permission: permission,
+        expires_at: expires_at,
+        signature: sig,
+        created_at: ts,
+    }
+
+    emit(share_invitations, invitation)
+
+    polykit_metering::record_usage(sender_id, "pass_share_create", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: 1568,
+        storage: 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    invitation
+}
+
+circuit accept_share(
+    invitation: ShareInvitation,
+    recipient_sk: bytes(3168),
+    recipient_id: bytes(16),
+    sender_pubkey: bytes(2592),
+) -> SharedCredential
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/share
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [shares_accepted, accept_latency_ns, accept_failures]
+    invariant "signature_valid" {
+        mldsa_verify(sender_pubkey,
+            concat(invitation.invitation_id, invitation.sender_id, invitation.credential_id,
+                   invitation.wrapped_key, invitation.permission, invitation.expires_at),
+            invitation.signature)
+    }
+    invariant "not_expired" { invitation.expires_at > now_ns() / 1000000 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let ts = now_ns() / 1000000
+
+    let shared_secret = mlkem_decaps(recipient_sk, invitation.wrapped_key)
+    let _unwrap_key = hkdf_sha3(shared_secret, "share-key-wrap", 32)
+
+    let shared = SharedCredential {
+        credential_id: invitation.credential_id,
+        owner_id: invitation.sender_id,
+        recipient_id: recipient_id,
+        wrapped_key: invitation.wrapped_key,
+        permission: invitation.permission,
+        state: 1,  // Active
+        shared_at: ts,
+    }
+
+    emit(share_events, shared)
+
+    polykit_metering::record_usage(recipient_id, "pass_share_accept", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
+    })
+
+    shared
+}
+
+circuit revoke_share(
+    sender_id: bytes(16),
+    credential_id: bytes(16),
+    recipient_id: bytes(16),
+    signing_sk: bytes(4896),
+) -> bool
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/share
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [shares_revoked, revoke_latency_ns]
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now, eslite_delete]
+{
+    let ts = now_ns() / 1000000
+    let revocation_payload = concat(sender_id, credential_id, recipient_id, "revoke", ts)
+    let _sig = mldsa_sign(signing_sk, revocation_payload)
+
+    let revoked = SharedCredential {
+        credential_id: credential_id,
+        owner_id: sender_id,
+        recipient_id: recipient_id,
+        wrapped_key: zero(1568),
+        permission: 0,
+        state: 2,  // Revoked
+        shared_at: ts,
+    }
+
+    emit(share_events, revoked)
+
+    polykit_metering::record_usage(sender_id, "pass_share_revoke", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 0, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    true
+}
+
+circuit create_shared_vault(
+    owner_id: bytes(16),
+    name: bytes(128),
+    max_members: u32,
+    signing_sk: bytes(4896),
+) -> SharedVault
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/share
+    status production
+    precision C
+    povc true
+    observe metrics: [shared_vaults_created]
+    invariant "name_present" { len(name) > 0 }
+    invariant "max_members_valid" { max_members >= 2 and max_members <= 1000 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [csprng, now, eslite_insert]
+    test golden "create_family_vault" {
+        let sk = bytes(4896, 0xBB)
+        let vault = create_shared_vault(bytes(16, 0x01), "Family", 6, sk)
+        assert vault.max_members == 6
+        assert vault.member_count == 1
+    }
+{
+    let ts = now_ns() / 1000000
+    let vault_id = bit_slice(sha3_256(concat(owner_id, name, csprng(16))), 0, 128)
+
+    let vault = SharedVault {
+        vault_id: vault_id,
+        name: name,
+        owner_id: owner_id,
+        member_count: 1,
+        max_members: max_members,
+        created_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(vault))
+
+    polykit_metering::record_usage(owner_id, "pass_vault_create", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    vault
+}
+
+circuit rewrap_for_recipient(
+    credential_key: bytes(32),
+    recipient_pubkey: bytes(1568),
+    credential_id: bytes(16),
+    recipient_id: bytes(16),
+    sender_id: bytes(16),
+) -> RewrapResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/share
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [rewrap_ops, rewrap_latency_ns]
+    invariant "key_nonzero" { credential_key != zero(32) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let kem = mlkem_encaps(recipient_pubkey)
+    let wrap_key = hkdf_sha3(kem.shared_secret, "share-key-wrap", 32)
+    let _wrapped = aes_keywrap(wrap_key, credential_key)
+
+    RewrapResult {
+        credential_id: credential_id,
+        recipient_id: recipient_id,
+        new_wrapped_key: kem.ciphertext,
+        rewrapped_at: now_ns() / 1000000,
+    }
+}

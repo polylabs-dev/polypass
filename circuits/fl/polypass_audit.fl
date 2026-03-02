@@ -1,0 +1,326 @@
+/// Poly Pass Audit — Breach detection, password strength, and vault health
+/// k-anonymity breach checking (HaveIBeenPwned-style), strength scoring, reuse detection
+/// govern lex esn/global/org/polylabs/pass
+
+import polykit_identity
+import polykit_metering
+
+// ── Types ───────────────────────────────────────────────────────
+
+type BreachResult = struct {
+    credential_id: bytes(16),
+    is_breached: bool,
+    breach_count: u32,
+    breach_sources: list<string>,
+    checked_at: u64,
+}
+
+type StrengthScore = struct {
+    credential_id: bytes(16),
+    score: u8,
+    entropy_bits: u16,
+    length: u16,
+    has_uppercase: bool,
+    has_lowercase: bool,
+    has_digits: bool,
+    has_symbols: bool,
+    is_common_pattern: bool,
+    feedback: list<string>,
+}
+
+type ReuseReport = struct {
+    user_id: bytes(16),
+    reused_groups: list<ReuseGroup>,
+    total_reused: u32,
+    total_credentials: u32,
+    reuse_percentage: u8,
+}
+
+type ReuseGroup = struct {
+    password_hash_prefix: bytes(5),
+    credential_ids: list<bytes(16)>,
+    domains: list<string>,
+}
+
+type HealthReport = struct {
+    user_id: bytes(16),
+    total_credentials: u32,
+    breached_count: u32,
+    weak_count: u32,
+    reused_count: u32,
+    old_count: u32,
+    missing_2fa_count: u32,
+    missing_passkey_count: u32,
+    unused_count: u32,
+    overall_score: u8,
+    generated_at: u64,
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream breach_alerts: event<BreachResult>
+    retention 7y
+    consumers [streamsight, console, governance]
+
+stream health_reports: event<HealthReport>
+    retention 365d
+    consumers [streamsight, console]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit check_breach(
+    credential_id: bytes(16),
+    password_hash: bytes(32),
+    user_id: bytes(16),
+) -> BreachResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/audit
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [breach_checks, breaches_found, breach_check_latency_ns]
+    monitor "breach_check_rate" { breach_checks < 100/s }
+    invariant "hash_nonzero" { password_hash != zero(32) }
+    invariant "k_anonymity_prefix" { len(bit_slice(sha1(password_hash), 0, 40)) >= 5 }
+    meters [compute_cycles, memory_bytes, bandwidth]
+    wasm_abi [now, http_fetch]
+    test golden "clean_credential" {
+        let result = check_breach(bytes(16, 0x01), bytes(32, 0xFF), bytes(16, 0x02))
+        assert result.credential_id == bytes(16, 0x01)
+    }
+{
+    let sha1_hash = sha1(password_hash)
+    let prefix = hex_encode(bit_slice(sha1_hash, 0, 40))
+    let suffix = hex_encode(bit_slice(sha1_hash, 40, 160))
+
+    // k-anonymity: only prefix leaves device, server returns all suffix matches
+    let range_response = http_fetch(concat("https://api.pwnedpasswords.com/range/", prefix))
+    let matches = parse_hibp_response(range_response)
+
+    let is_breached = false
+    let breach_count = 0
+    let sources = []
+
+    for entry in matches {
+        if constant_time_eq(entry.suffix, suffix) {
+            is_breached = true
+            breach_count = entry.count
+            sources = entry.sources
+        }
+    }
+
+    let result = BreachResult {
+        credential_id: credential_id,
+        is_breached: is_breached,
+        breach_count: breach_count,
+        breach_sources: sources,
+        checked_at: now_ns() / 1000000,
+    }
+
+    if is_breached {
+        emit(breach_alerts, result)
+    }
+
+    polykit_metering::record_usage(user_id, "pass_breach_check", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: len(range_response),
+        storage: 0, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
+    })
+
+    result
+}
+
+circuit score_strength(
+    credential_id: bytes(16),
+    password: bytes,
+) -> StrengthScore
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/audit
+    status production
+    precision B
+    povc true
+    observe metrics: [strength_scores, weak_passwords, strong_passwords]
+    invariant "password_present" { len(password) > 0 }
+    meters [compute_cycles, memory_bytes]
+    test golden "weak_password" {
+        let score = score_strength(bytes(16, 0x01), "password")
+        assert score.score < 30
+        assert score.is_common_pattern == true
+    }
+    test golden "strong_password" {
+        let score = score_strength(bytes(16, 0x01), "j8#kL!m9$nQ2@pR5")
+        assert score.score >= 80
+        assert score.entropy_bits >= 80
+    }
+{
+    let length = len(password)
+    let has_upper = regex_match(password, "[A-Z]")
+    let has_lower = regex_match(password, "[a-z]")
+    let has_digit = regex_match(password, "[0-9]")
+    let has_symbol = regex_match(password, "[^A-Za-z0-9]")
+    let is_common = check_common_patterns(password)
+
+    let char_space = 0
+    if has_lower { char_space = char_space + 26 }
+    if has_upper { char_space = char_space + 26 }
+    if has_digit { char_space = char_space + 10 }
+    if has_symbol { char_space = char_space + 32 }
+    let entropy = length * log2(max(char_space, 1))
+
+    let score = 0
+    if entropy >= 128 { score = 100 }
+    else if entropy >= 80 { score = 80 }
+    else if entropy >= 60 { score = 60 }
+    else if entropy >= 40 { score = 40 }
+    else { score = 20 }
+
+    if is_common { score = min(score, 20) }
+    if length < 8 { score = min(score, 30) }
+
+    let feedback = []
+    if length < 12 { feedback = append(feedback, "Use at least 12 characters") }
+    if not has_upper { feedback = append(feedback, "Add uppercase letters") }
+    if not has_symbol { feedback = append(feedback, "Add special characters") }
+    if is_common { feedback = append(feedback, "Avoid common patterns") }
+
+    StrengthScore {
+        credential_id: credential_id,
+        score: score,
+        entropy_bits: entropy,
+        length: length,
+        has_uppercase: has_upper,
+        has_lowercase: has_lower,
+        has_digits: has_digit,
+        has_symbols: has_symbol,
+        is_common_pattern: is_common,
+        feedback: feedback,
+    }
+}
+
+circuit detect_reuse(
+    user_id: bytes(16),
+    credential_ids: list<bytes(16)>,
+    password_hashes: list<bytes(32)>,
+    domains: list<string>,
+) -> ReuseReport
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/audit
+    status production
+    precision B
+    povc true
+    constant_time true
+    observe metrics: [reuse_scans, reuse_groups_found, reuse_percentage]
+    invariant "lengths_match" { len(credential_ids) == len(password_hashes) and len(credential_ids) == len(domains) }
+    meters [compute_cycles, memory_bytes]
+{
+    let groups = map<bytes(32), ReuseGroup>{}
+    let total_reused = 0
+
+    for i in 0..len(credential_ids) {
+        let hash = password_hashes[i]
+        if groups.contains(hash) {
+            groups[hash].credential_ids = append(groups[hash].credential_ids, credential_ids[i])
+            groups[hash].domains = append(groups[hash].domains, domains[i])
+        } else {
+            groups[hash] = ReuseGroup {
+                password_hash_prefix: bit_slice(hash, 0, 40),
+                credential_ids: [credential_ids[i]],
+                domains: [domains[i]],
+            }
+        }
+    }
+
+    let reuse_groups = []
+    for (_, group) in groups {
+        if len(group.credential_ids) > 1 {
+            reuse_groups = append(reuse_groups, group)
+            total_reused = total_reused + len(group.credential_ids)
+        }
+    }
+
+    let pct = if len(credential_ids) > 0 {
+        (total_reused * 100) / len(credential_ids)
+    } else { 0 }
+
+    ReuseReport {
+        user_id: user_id,
+        reused_groups: reuse_groups,
+        total_reused: total_reused,
+        total_credentials: len(credential_ids),
+        reuse_percentage: pct,
+    }
+}
+
+circuit generate_health_report(
+    user_id: bytes(16),
+    credential_ids: list<bytes(16)>,
+    breach_statuses: list<u8>,
+    strength_scores: list<u8>,
+    password_ages_days: list<u32>,
+    totp_present: list<bool>,
+    passkey_present: list<bool>,
+    last_used_ns: list<u64>,
+    reuse_report: ReuseReport,
+    age_threshold_days: u32,
+    unused_threshold_days: u32,
+) -> HealthReport
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/audit
+    status production
+    precision B
+    povc true
+    observe metrics: [health_reports_generated, overall_scores]
+    invariant "consistent_lengths" {
+        len(credential_ids) == len(breach_statuses)
+        and len(credential_ids) == len(strength_scores)
+        and len(credential_ids) == len(password_ages_days)
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let total = len(credential_ids)
+    let breached = 0
+    let weak = 0
+    let old = 0
+    let no_2fa = 0
+    let no_passkey = 0
+    let unused = 0
+    let now_ms = now_ns() / 1000000
+    let unused_threshold_ns = unused_threshold_days * 86400000
+
+    for i in 0..total {
+        if breach_statuses[i] > 0 { breached = breached + 1 }
+        if strength_scores[i] < 50 { weak = weak + 1 }
+        if password_ages_days[i] > age_threshold_days { old = old + 1 }
+        if not totp_present[i] { no_2fa = no_2fa + 1 }
+        if not passkey_present[i] { no_passkey = no_passkey + 1 }
+        if now_ms - (last_used_ns[i] / 1000000) > unused_threshold_ns { unused = unused + 1 }
+    }
+
+    let issues = breached + weak + reuse_report.total_reused + old
+    let max_issues = total * 4
+    let overall = if max_issues > 0 { 100 - ((issues * 100) / max_issues) } else { 100 }
+
+    let report = HealthReport {
+        user_id: user_id,
+        total_credentials: total,
+        breached_count: breached,
+        weak_count: weak,
+        reused_count: reuse_report.total_reused,
+        old_count: old,
+        missing_2fa_count: no_2fa,
+        missing_passkey_count: no_passkey,
+        unused_count: unused,
+        overall_score: max(0, min(100, overall)),
+        generated_at: now_ms,
+    }
+
+    emit(health_reports, report)
+
+    polykit_metering::record_usage(user_id, "pass_health_report", DimensionValues {
+        executions: 1, hashes: 0, bandwidth: 0,
+        storage: 0, observables: total, proofs: 0, circuits: 0, mpc_sessions: 0,
+    })
+
+    report
+}

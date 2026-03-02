@@ -1,0 +1,360 @@
+/// Poly Pass Import — Multi-format credential import with deduplication
+/// Supports 9 formats: 1Password, Bitwarden, LastPass, Dashlane, Chrome, Firefox, Safari, KeePass, Proton Pass
+/// govern lex esn/global/org/polylabs/pass
+
+import polykit_identity
+import polykit_metering
+
+// ── Enums ───────────────────────────────────────────────────────
+
+type ImportFormat = enum {
+    OnePasswordCsv,
+    OnePassword1pux,
+    BitwardenJson,
+    BitwardenCsv,
+    LastPassCsv,
+    DashlaneDash,
+    DashlaneCsv,
+    ChromeCsv,
+    FirefoxCsv,
+    SafariCsv,
+    KeePassKdbx,
+    ProtonPassJson,
+}
+
+// ── Types ───────────────────────────────────────────────────────
+
+type ImportResult = struct {
+    format: u8,
+    total_parsed: u32,
+    imported: u32,
+    duplicates_found: u32,
+    duplicates_merged: u32,
+    errors: u32,
+    import_time_ms: u64,
+}
+
+type DuplicateMatch = struct {
+    existing_credential_id: bytes(16),
+    imported_domain: string,
+    imported_username_hash: bytes(32),
+    similarity_score: u16,
+    action: u8,
+}
+
+type ParsedCredential = struct {
+    domain: string,
+    username: string,
+    password: bytes,
+    notes: bytes,
+    totp_seed: option<string>,
+    folder_name: option<string>,
+    tags: list<string>,
+    created_at: option<u64>,
+}
+
+type DuplicateAction = enum {
+    Skip,
+    Replace,
+    KeepBoth,
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream import_events: event<ImportResult>
+    retention 365d
+    consumers [streamsight, console]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit import_csv(
+    raw_csv: bytes,
+    format: u8,
+    vault_key: bytes(32),
+    user_id: bytes(16),
+    signing_sk: bytes(4896),
+) -> ImportResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/import
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [csv_imports, csv_rows_parsed, csv_import_latency_ms]
+    monitor "import_size" { csv_rows_parsed < 50000 }
+    invariant "supported_csv_format" {
+        format == 0 or format == 3 or format == 4 or format == 6
+        or format == 7 or format == 8 or format == 9
+    }
+    invariant "csv_nonempty" { len(raw_csv) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [csprng, now, eslite_insert]
+    test golden "import_chrome_csv" {
+        let csv = "name,url,username,password\nGitHub,https://github.com,user@test.com,pass123"
+        let result = import_csv(csv, 7, bytes(32, 0xAA), bytes(16, 0x01), bytes(4896, 0xBB))
+        assert result.total_parsed == 1
+        assert result.errors == 0
+    }
+{
+    let start = now_ns() / 1000000
+    let rows = parse_csv(raw_csv)
+    let header = rows[0]
+    let parsed = []
+    let errors = 0
+
+    for i in 1..len(rows) {
+        let row = rows[i]
+        let cred = map_csv_row_to_credential(row, header, format)
+        if cred != none {
+            parsed = append(parsed, unwrap(cred))
+        } else {
+            errors = errors + 1
+        }
+    }
+
+    let imported = 0
+    for cred in parsed {
+        let cred_id = bit_slice(sha3_256(concat(user_id, cred.domain, cred.username, csprng(16))), 0, 128)
+        let cred_key = hkdf_sha3(vault_key, concat("cred-key:", cred_id), 32)
+        let nonce = csprng(12)
+        let aad = concat(cred_id, sha3_256(user_id))
+        let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, aad)
+        let _sig = mldsa_sign(signing_sk, concat(cred_id, sha3_256(cred.domain)))
+        imported = imported + 1
+    }
+
+    let elapsed = (now_ns() / 1000000) - start
+
+    let result = ImportResult {
+        format: format,
+        total_parsed: len(parsed),
+        imported: imported,
+        duplicates_found: 0,
+        duplicates_merged: 0,
+        errors: errors,
+        import_time_ms: elapsed,
+    }
+
+    emit(import_events, result)
+
+    polykit_metering::record_usage(user_id, "pass_import_csv", DimensionValues {
+        executions: 1, hashes: imported * 2, bandwidth: 0,
+        storage: imported * 512, observables: 1, proofs: imported, circuits: 0, mpc_sessions: 0,
+    })
+
+    result
+}
+
+circuit import_1password(
+    raw_data: bytes,
+    is_1pux: bool,
+    vault_key: bytes(32),
+    user_id: bytes(16),
+    signing_sk: bytes(4896),
+) -> ImportResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/import
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [onepassword_imports, onepassword_items_parsed]
+    invariant "data_nonempty" { len(raw_data) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [csprng, now, eslite_insert]
+{
+    let start = now_ns() / 1000000
+    let parsed = if is_1pux {
+        parse_1pux(raw_data)
+    } else {
+        let rows = parse_csv(raw_data)
+        map_1password_csv(rows)
+    }
+
+    let imported = 0
+    for cred in parsed {
+        let cred_id = bit_slice(sha3_256(concat(user_id, cred.domain, cred.username, csprng(16))), 0, 128)
+        let cred_key = hkdf_sha3(vault_key, concat("cred-key:", cred_id), 32)
+        let nonce = csprng(12)
+        let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(cred_id, sha3_256(user_id)))
+        let _sig = mldsa_sign(signing_sk, concat(cred_id, sha3_256(cred.domain)))
+        imported = imported + 1
+    }
+
+    let elapsed = (now_ns() / 1000000) - start
+
+    let result = ImportResult {
+        format: if is_1pux { 1 } else { 0 },
+        total_parsed: len(parsed),
+        imported: imported,
+        duplicates_found: 0,
+        duplicates_merged: 0,
+        errors: 0,
+        import_time_ms: elapsed,
+    }
+
+    emit(import_events, result)
+    result
+}
+
+circuit import_bitwarden(
+    raw_json: bytes,
+    vault_key: bytes(32),
+    user_id: bytes(16),
+    signing_sk: bytes(4896),
+) -> ImportResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/import
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [bitwarden_imports, bitwarden_items_parsed]
+    invariant "json_nonempty" { len(raw_json) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [csprng, now, eslite_insert]
+{
+    let start = now_ns() / 1000000
+    let parsed = parse_bitwarden_json(raw_json)
+
+    let imported = 0
+    for cred in parsed {
+        let cred_id = bit_slice(sha3_256(concat(user_id, cred.domain, cred.username, csprng(16))), 0, 128)
+        let cred_key = hkdf_sha3(vault_key, concat("cred-key:", cred_id), 32)
+        let nonce = csprng(12)
+        let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(cred_id, sha3_256(user_id)))
+        let _sig = mldsa_sign(signing_sk, concat(cred_id, sha3_256(cred.domain)))
+        imported = imported + 1
+    }
+
+    let elapsed = (now_ns() / 1000000) - start
+
+    let result = ImportResult {
+        format: 2,
+        total_parsed: len(parsed),
+        imported: imported,
+        duplicates_found: 0,
+        duplicates_merged: 0,
+        errors: 0,
+        import_time_ms: elapsed,
+    }
+
+    emit(import_events, result)
+    result
+}
+
+circuit detect_duplicates(
+    imported: list<ParsedCredential>,
+    existing_domains: list<string>,
+    existing_username_hashes: list<bytes(32)>,
+    existing_credential_ids: list<bytes(16)>,
+) -> list<DuplicateMatch>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/import
+    status production
+    precision B
+    povc true
+    observe metrics: [dedup_scans, duplicates_detected]
+    invariant "existing_consistent" {
+        len(existing_domains) == len(existing_username_hashes)
+        and len(existing_domains) == len(existing_credential_ids)
+    }
+    meters [compute_cycles, memory_bytes]
+{
+    let duplicates = []
+
+    for cred in imported {
+        let username_hash = sha3_256(cred.username)
+        let best_score = 0
+        let best_idx = -1
+
+        for j in 0..len(existing_domains) {
+            let domain_score = if cred.domain == existing_domains[j] { 500 }
+                else if ends_with(cred.domain, concat(".", existing_domains[j])) { 300 }
+                else { 0 }
+
+            let username_score = if constant_time_eq(username_hash, existing_username_hashes[j]) { 500 } else { 0 }
+
+            let total = domain_score + username_score
+            if total > best_score {
+                best_score = total
+                best_idx = j
+            }
+        }
+
+        if best_score >= 500 {
+            duplicates = append(duplicates, DuplicateMatch {
+                existing_credential_id: existing_credential_ids[best_idx],
+                imported_domain: cred.domain,
+                imported_username_hash: sha3_256(cred.username),
+                similarity_score: best_score,
+                action: 0,  // Skip by default
+            })
+        }
+    }
+
+    duplicates
+}
+
+circuit merge_entries(
+    duplicates: list<DuplicateMatch>,
+    imported: list<ParsedCredential>,
+    vault_key: bytes(32),
+    user_id: bytes(16),
+    signing_sk: bytes(4896),
+) -> ImportResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/import
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [merge_ops, entries_merged, entries_skipped, entries_kept_both]
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [csprng, now, eslite_insert]
+{
+    let start = now_ns() / 1000000
+    let merged = 0
+    let skipped = 0
+
+    for dup in duplicates {
+        if dup.action == 0 {
+            skipped = skipped + 1
+        } else if dup.action == 1 {
+            // Replace: re-encrypt with existing credential_id
+            let idx = find_imported_by_hash(imported, dup.imported_username_hash, dup.imported_domain)
+            if idx >= 0 {
+                let cred = imported[idx]
+                let cred_key = hkdf_sha3(vault_key, concat("cred-key:", dup.existing_credential_id), 32)
+                let nonce = csprng(12)
+                let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(dup.existing_credential_id, sha3_256(user_id)))
+                let _sig = mldsa_sign(signing_sk, concat(dup.existing_credential_id, sha3_256(cred.domain)))
+                merged = merged + 1
+            }
+        } else if dup.action == 2 {
+            // KeepBoth: create new credential_id
+            let idx = find_imported_by_hash(imported, dup.imported_username_hash, dup.imported_domain)
+            if idx >= 0 {
+                let cred = imported[idx]
+                let new_id = bit_slice(sha3_256(concat(user_id, cred.domain, csprng(16))), 0, 128)
+                let cred_key = hkdf_sha3(vault_key, concat("cred-key:", new_id), 32)
+                let nonce = csprng(12)
+                let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(new_id, sha3_256(user_id)))
+                let _sig = mldsa_sign(signing_sk, concat(new_id, sha3_256(cred.domain)))
+                merged = merged + 1
+            }
+        }
+    }
+
+    let elapsed = (now_ns() / 1000000) - start
+
+    ImportResult {
+        format: 0xFF,
+        total_parsed: len(duplicates),
+        imported: merged,
+        duplicates_found: len(duplicates),
+        duplicates_merged: merged,
+        errors: 0,
+        import_time_ms: elapsed,
+    }
+}

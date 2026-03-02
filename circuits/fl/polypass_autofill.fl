@@ -1,0 +1,272 @@
+/// Poly Pass Autofill — URL matching, form detection, and credential fill
+/// Fuzzy URL matching with domain equivalence and form field mapping
+/// govern lex esn/global/org/polylabs/pass
+
+import polykit_identity
+import polykit_metering
+
+// ── Types ───────────────────────────────────────────────────────
+
+type UrlPattern = struct {
+    scheme: string,
+    domain: string,
+    path_prefix: string,
+    port: u16,
+    equivalent_domains: list<string>,
+}
+
+type FormField = struct {
+    field_name: string,
+    field_type: u8,
+    autocomplete_hint: string,
+    selector: string,
+    tab_index: u16,
+}
+
+type AutofillMatch = struct {
+    credential_id: bytes(16),
+    domain: string,
+    username_hash: bytes(32),
+    match_score: u16,
+    match_reason: u8,
+    has_totp: bool,
+    has_passkey: bool,
+}
+
+type AutofillResult = struct {
+    fields_filled: u8,
+    credential_id: bytes(16),
+    fill_latency_ns: u64,
+}
+
+type SaveCandidate = struct {
+    url: string,
+    username: string,
+    password_encrypted: bytes,
+    form_fields: list<FormField>,
+    is_update: bool,
+    existing_credential_id: option<bytes(16)>,
+}
+
+// ── Enums ───────────────────────────────────────────────────────
+
+type MatchReason = enum {
+    ExactDomain,
+    EquivalentDomain,
+    SubdomainMatch,
+    PathMatch,
+    FuzzyMatch,
+}
+
+type FieldType = enum {
+    Username,
+    Email,
+    Password,
+    Totp,
+    SubmitButton,
+    Unknown,
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream autofill_events: event<AutofillResult>
+    retention 90d
+    consumers [streamsight, console]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit match_url(
+    url: string,
+    patterns: list<UrlPattern>,
+    credential_ids: list<bytes(16)>,
+    username_hashes: list<bytes(32)>,
+    totp_flags: list<bool>,
+    passkey_flags: list<bool>,
+) -> list<AutofillMatch>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/autofill
+    status production
+    precision B
+    povc true
+    observe metrics: [url_matches, match_latency_ns, fuzzy_match_count]
+    monitor "match_latency" { match_latency_ns < 5000000 }
+    invariant "parallel_lengths" { len(patterns) == len(credential_ids) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+    test golden "exact_domain_match" {
+        let pat = UrlPattern { scheme: "https", domain: "github.com", path_prefix: "/", port: 443, equivalent_domains: [] }
+        let matches = match_url("https://github.com/login", [pat], [bytes(16, 0x01)], [bytes(32, 0xAA)], [false], [false])
+        assert len(matches) == 1
+        assert matches[0].match_reason == 0
+    }
+    test golden "equivalent_domain_match" {
+        let pat = UrlPattern { scheme: "https", domain: "google.com", path_prefix: "/", port: 443, equivalent_domains: ["accounts.google.com", "mail.google.com"] }
+        let matches = match_url("https://accounts.google.com/login", [pat], [bytes(16, 0x01)], [bytes(32, 0xAA)], [true], [false])
+        assert len(matches) == 1
+        assert matches[0].match_reason == 1
+    }
+{
+    let parsed_domain = parse_domain(url)
+    let parsed_path = parse_path(url)
+    let results = []
+
+    parallel for i in 0..len(patterns) {
+        let score = 0
+        let reason = 4  // FuzzyMatch default
+
+        if parsed_domain == patterns[i].domain {
+            score = 1000
+            reason = 0  // ExactDomain
+        } else if contains(patterns[i].equivalent_domains, parsed_domain) {
+            score = 900
+            reason = 1  // EquivalentDomain
+        } else if ends_with(parsed_domain, concat(".", patterns[i].domain)) {
+            score = 800
+            reason = 2  // SubdomainMatch
+        } else if levenshtein(parsed_domain, patterns[i].domain) <= 2 {
+            score = 500
+            reason = 4  // FuzzyMatch
+        }
+
+        if score > 0 and starts_with(parsed_path, patterns[i].path_prefix) {
+            score = score + 50
+            if reason > 3 { reason = 3 }  // PathMatch bonus
+        }
+
+        if score > 0 {
+            results = append(results, AutofillMatch {
+                credential_id: credential_ids[i],
+                domain: patterns[i].domain,
+                username_hash: username_hashes[i],
+                match_score: score,
+                match_reason: reason,
+                has_totp: totp_flags[i],
+                has_passkey: passkey_flags[i],
+            })
+        }
+    }
+
+    sort_desc(results, match_score)
+}
+
+circuit autofill_form(
+    fields: list<FormField>,
+    username: bytes,
+    password: bytes,
+    totp_code: option<string>,
+) -> AutofillResult
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/autofill
+    status production
+    precision B
+    povc true
+    observe metrics: [autofill_ops, fields_filled, autofill_latency_ns]
+    monitor "autofill_latency" { autofill_latency_ns < 10000000 }
+    invariant "fields_present" { len(fields) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now, dom_fill]
+    test golden "autofill_form_basic" {
+        let fields = [FormField {
+            field_name: "username", field_type: 0,
+            autocomplete_hint: "username", selector: "#user", tab_index: 1,
+        }, FormField {
+            field_name: "password", field_type: 2,
+            autocomplete_hint: "current-password", selector: "#pass", tab_index: 2,
+        }]
+        let result = autofill_form(fields, bytes(64, 0xAA), bytes(128, 0xBB), none)
+        assert result.fields_filled == 2
+    }
+{
+    let start = now_ns()
+    let filled = 0
+
+    for field in fields {
+        if field.field_type == 0 or field.autocomplete_hint == "username" or field.autocomplete_hint == "email" {
+            dom_fill(field.selector, username)
+            filled = filled + 1
+        } else if field.field_type == 2 or field.autocomplete_hint == "current-password" {
+            dom_fill(field.selector, password)
+            filled = filled + 1
+        } else if field.field_type == 3 and totp_code != none {
+            dom_fill(field.selector, unwrap(totp_code))
+            filled = filled + 1
+        }
+    }
+
+    let elapsed = now_ns() - start
+
+    AutofillResult {
+        fields_filled: filled,
+        credential_id: zero(16),
+        fill_latency_ns: elapsed,
+    }
+}
+
+circuit suggest_credentials(
+    url: string,
+    vault_patterns: list<UrlPattern>,
+    credential_ids: list<bytes(16)>,
+    username_hashes: list<bytes(32)>,
+    last_used_ns: list<u64>,
+    totp_flags: list<bool>,
+    passkey_flags: list<bool>,
+) -> list<AutofillMatch>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/autofill
+    status production
+    precision B
+    povc true
+    observe metrics: [suggest_ops, suggestions_returned]
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let matches = match_url(url, vault_patterns, credential_ids, username_hashes, totp_flags, passkey_flags)
+
+    // Re-rank by recency for ties in match_score
+    for i in 0..len(matches) {
+        let idx = index_of(credential_ids, matches[i].credential_id)
+        if last_used_ns[idx] > now_ns() - 604800000000000 {
+            matches[i].match_score = matches[i].match_score + 100
+        }
+    }
+
+    sort_desc(matches, match_score)
+}
+
+circuit save_from_form(
+    candidate: SaveCandidate,
+    vault_key: bytes(32),
+    user_id: bytes(16),
+    signing_sk: bytes(4896),
+) -> bytes(16)
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/autofill
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [save_ops, save_update_ops, save_new_ops]
+    invariant "url_present" { len(candidate.url) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [csprng, now, eslite_insert]
+{
+    let credential_id = if candidate.is_update and candidate.existing_credential_id != none {
+        unwrap(candidate.existing_credential_id)
+    } else {
+        bit_slice(sha3_256(concat(user_id, candidate.url, csprng(16))), 0, 128)
+    }
+
+    let cred_key = hkdf_sha3(vault_key, concat("cred-key:", credential_id), 32)
+    let nonce = csprng(12)
+    let aad = concat(credential_id, sha3_256(user_id))
+    let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, candidate.password_encrypted, aad)
+
+    let _sig = mldsa_sign(signing_sk, concat(credential_id, sha3_256(candidate.url)))
+
+    polykit_metering::record_usage(user_id, "pass_autofill_save", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: 0,
+        storage: 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    credential_id
+}

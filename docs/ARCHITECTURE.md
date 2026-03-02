@@ -2,7 +2,7 @@
 
 **Version**: 3.0
 **Date**: February 2026
-**Platform**: eStream v0.8.3
+**Platform**: eStream v0.9.1
 **Upstream**: PolyKit v0.3.0, eStream scatter-cas, graph/DAG constructs
 **Build Pipeline**: FastLang (.fl) → ESCIR → Rust/WASM codegen → .escd
 
@@ -21,7 +21,7 @@ Poly Pass is a post-quantum encrypted password manager with SPARK biometric auth
 | Credential state | Implicit | `state_machine credential_lifecycle` (ACTIVE → DELETED) |
 | Circuit format | ESCIR YAML (`circuit.escir.yaml`) | FastLang `.fl` with PolyKit profiles |
 | RBAC | Per-circuit annotations | eStream `rbac.fl` composed via PolyKit |
-| Platform | eStream v0.8.1 | eStream v0.8.3 |
+| Platform | eStream v0.8.1 | eStream v0.9.1 |
 
 ---
 
@@ -409,6 +409,68 @@ Continuous background analysis via the `polypass_audit.fl` circuit:
 | Unused credentials | Not accessed in >1 year | `last_used_ns` overlay |
 
 Breach checking uses **k-anonymity** (SHA-1 prefix query) so the full password hash is never sent to any server. The `ai_feed breach_alerting` on `vault_registry` triggers proactive notifications when new breaches are published.
+
+---
+
+## Stratum & Cortex Integration
+
+Poly Pass uses the full **Stratum + Cortex** pattern across both graph files. Stratum provides the typed graph storage layer with CSR (Compressed Sparse Row) tiered memory, delta-curated overlays, and merkle-chained series. Cortex adds AI governance with field-level privacy controls, anomaly detection, and ESLM feed integration.
+
+### How It Works
+
+Every `data` node declaration carries both `store graph` (Stratum) and `cortex { ... }` (AI governance) blocks:
+
+```fastlang
+data CredentialNode : app v1 {
+    credential_id: string,
+    ...
+}
+    store graph
+    govern lex esn/global/org/polylabs/pass
+    cortex {
+        redact [password_encrypted, notes_encrypted, totp_seed]
+        obfuscate [user_id, url_domain]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+```
+
+- **`redact`** — Fields completely stripped from Cortex AI inference and external queries. Encrypted credential data never enters the AI feed.
+- **`obfuscate`** — Fields hashed/pseudonymized before entering the AI layer. Cortex can detect patterns (e.g., unusual access from a user_id) without learning the actual identity.
+- **`infer on_write`** — Cortex inference runs on every graph mutation, enabling real-time anomaly detection.
+- **`on_anomaly alert`** — Anomalies trigger alerts to the `pass-security` channel via StreamSight.
+
+### Graph-Level Stratum Features
+
+Both `vault_registry` and `share_network` graphs include:
+
+| Feature | Description |
+|---------|-------------|
+| `overlay ... curate delta_curate` | Typed overlay columns (breach_status, strength_score, password_age_days, etc.) maintained incrementally without mutating base graph nodes |
+| `storage csr { hot @bram, warm @ddr, cold @nvme }` | Three-tier memory hierarchy — hot data in block RAM, warm in DDR, cold on NVMe |
+| `ai_feed` | ESLM feed channel — `breach_alerting` for vault graph, `share_anomaly` for share graph |
+| `observe ... threshold` | StreamSight observation with configurable anomaly score threshold and baseline window |
+| `series ... merkle_chain / lattice_imprint / witness_attest` | Immutable audit trail with Merkle chaining, lattice imprinting, and witness attestation |
+
+### Cortex Coverage by Node Type
+
+| Node | Graph | `redact` | `obfuscate` | `infer` | `on_anomaly` |
+|------|-------|----------|-------------|---------|---------------|
+| `CredentialNode` | vault_registry | password_encrypted, notes_encrypted, totp_seed | user_id, url_domain | on_write | alert "pass-security" |
+| `FolderNode` | vault_registry | — | user_id | on_write | — |
+| `TagNode` | vault_registry | — | user_id | on_write | — |
+| `ShareUserNode` | share_network | email | user_id | on_write | alert "pass-security" |
+| `SharedVaultNode` | share_network | — | owner_id | on_write | alert "pass-security" |
+| `SharedCredentialNode` | share_network | wrapped_key | added_by | on_write | — |
+
+### State Machines
+
+Two state machines enforce lifecycle governance with anomaly detection:
+
+- **`credential_lifecycle`** (vault graph): ACTIVE → EXPIRED → ROTATED → ACTIVE, with COMPROMISED and DELETED terminal/near-terminal states. Breach detection triggers automatic state transition.
+- **`share_lifecycle`** (share graph): PENDING → ACTIVE, with REVOKED and EXPIRED terminals. Permission updates loop within ACTIVE, gated by ACL signature verification.
+
+Both use `persistence wal` and `li_anomaly_detection true` for durable state with Cortex-monitored transitions.
 
 ---
 

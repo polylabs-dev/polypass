@@ -1,0 +1,97 @@
+[package]
+name = "@polylabs/polypass"
+version = "0.1.0"
+description = "PQ password manager — SPARK biometric vault, credential autofill, breach monitoring, and zero-knowledge share grants"
+license = "Apache-2.0"
+repository = "https://github.com/polylabs-dev/polypass"
+homepage = "https://polylabs.dev/polypass"
+readme = "README.md"
+keywords = ["password-manager", "vault", "credentials", "breach-check", "pq-crypto", "spark", "autofill"]
+category = "smart-circuit"
+implementation_type = "FastLang"
+status = "Active"
+
+[publisher]
+id = "b7e3a1d9f04c28561ea7b3c0d5f29184a6e80b7cd3f491025e8a6b7c0d3f4e5a"
+name = "Poly Labs"
+signing_key_id = "polylabs-signing-key-01"
+email = "engineering@polylabs.dev"
+url = "https://github.com/polylabs-dev"
+
+[escir]
+api_version = "0.9.1"
+min_platform_version = "0.9.1"
+max_platform_version = "1.0.0"
+
+[lex]
+requirements = [
+    "esn/polylabs/polypass/vaults",
+    "esn/polylabs/polypass/credentials",
+    "esn/polylabs/polypass/breach",
+    "esn/marketplace/licensing",
+]
+
+[dependencies]
+estream-spark-auth = "^0.9.1"
+estream-eslite = "^0.9.1"
+
+[pricing]
+license_type = "per-seat"
+share_price = "2.99"
+private_price = "4.99"
+
+[telemetry]
+schema_hash = "auto"
+metrics = [
+    "vault_operations",
+    "credential_stores",
+    "autofill_events",
+    "breach_checks",
+    "share_grants",
+    "encrypt_ops",
+]
+aggregate_window = "1h"
+cohort_min_size = 50
+noise_budget = "1.0"
+
+[schemas]
+provides = [
+    "VaultEntry",
+    "CredentialRecord",
+    "BreachResult",
+    "ShareGrant",
+    "EncryptedBlob",
+    "AutofillHint",
+]
+requires = ["SparkIdentity", "ESLiteStore"]
+
+[circuits]
+provides = [
+    "vault_store",
+    "credential_autofill",
+    "breach_check",
+    "share_credential",
+    "vault_encrypt",
+    "vault_decrypt",
+]
+target = ["cpu"]
+
+[lifecycle]
+status = "active"
+breaking_change_notice_days = 90
+changelog = "CHANGELOG.md"
+
+[author]
+name = "Poly Labs"
+email = "engineering@polylabs.dev"
+url = "https://github.com/polylabs-dev"
+
+[marketplace]
+pricing = "usage-based"
+visibility = "compiled"
+
+[include]
+schemas = ["schemas/*.data.yaml"]
+circuits = ["circuits/*.fl"]
+tests = ["test_vectors/*.esz"]
+docs = ["docs/*.md", "README.md"]
