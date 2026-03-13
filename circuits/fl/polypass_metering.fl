@@ -1,27 +1,25 @@
-/// Poly Pass Metering — Per-product 8D metering for Poly Pass operations
-/// Isolated under polylabs.pass.metering lex namespace
-/// govern lex esn/global/org/polylabs/pass
+// Poly Pass Metering — Per-product 8D metering for Poly Pass operations (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass/metering
+//   Isolated under polylabs.pass.metering lex namespace.
+//   8 dimensions: Executions, Hashes, Bandwidth, Storage, Observables, Proofs, Circuits, MpcSessions.
+//
+//  Operation                 | E | H | B | S | O | P | C | M |
+//  --------------------------+---+---+---+---+---+---+---+---+
+//  store (encrypt/decrypt)   | 1 | 1 |   | * | 1 |   |   |   |
+//  autofill (match + fill)   | 1 |   |   |   | 1 |   |   |   |
+//  share (create/accept)     | 1 | 2 | * | * | 1 | 1 |   |   |
+//  breach_check              | 1 | 2 | * |   | 1 |   |   |   |
+//  import                    | 1 | * |   | * | 1 | * |   |   |
+//  key_rotation              | 1 | * |   | * | 1 | 1 |   |   |
+//  vault_graph_write         | 1 | 1 |   | * | * | 1 |   |   |
+//  share_graph_write         | 1 | 1 | * | * | * | 1 |   |   |
+//  health_report             | 1 |   |   |   | * |   |   |   |
 
 import polykit_metering
 
-// ── Metering Maps ───────────────────────────────────────────────
-//
-//  Operation                 │ E │ H │ B │ S │ O │ P │ C │ M │
-//  ──────────────────────────┼───┼───┼───┼───┼───┼───┼───┼───┤
-//  store (encrypt/decrypt)   │ 1 │ 1 │   │ * │ 1 │   │   │   │
-//  autofill (match + fill)   │ 1 │   │   │   │ 1 │   │   │   │
-//  share (create/accept)     │ 1 │ 2 │ * │ * │ 1 │ 1 │   │   │
-//  breach_check              │ 1 │ 2 │ * │   │ 1 │   │   │   │
-//  import                    │ 1 │ * │   │ * │ 1 │ * │   │   │
-//  key_rotation              │ 1 │ * │   │ * │ 1 │ 1 │   │   │
-//  vault_graph_write         │ 1 │ 1 │   │ * │ * │ 1 │   │   │
-//  share_graph_write         │ 1 │ 1 │ * │ * │ * │ 1 │   │   │
-//  health_report             │ 1 │   │   │   │ * │   │   │   │
-//
-//  E=Executions H=Hashes B=Bandwidth S=Storage O=Observables P=Proofs C=Circuits M=MpcSessions
-//  * = variable based on payload size / credential count
-
-// ── Types ───────────────────────────────────────────────────────
+// ── Enums ───────────────────────────────────────────────────────
 
 type PassMeteringCategory = enum {
     Store,
@@ -35,7 +33,9 @@ type PassMeteringCategory = enum {
     HealthReport,
 }
 
-type PassTierLimits = struct {
+// ── Data Declarations (Stratum + Cortex) ────────────────────────
+
+data PassTierLimits : pass v1 {
     tier_name: string,
     max_credentials: u32,
     max_devices: u32,
@@ -44,8 +44,13 @@ type PassTierLimits = struct {
     max_imports_per_day: u32,
     base_limits: polykit_metering::TierLimits,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/metering
+    cortex {
+        infer on_read
+    }
 
-type PassUsageSummary = struct {
+data PassUsageSummary : pass v1 {
     user_id: bytes(16),
     credential_count: u32,
     device_count: u32,
@@ -55,6 +60,13 @@ type PassUsageSummary = struct {
     dimensions: polykit_metering::DimensionValues,
     period_start: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/metering
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "pass-team"
+    }
 
 // ── Streams ─────────────────────────────────────────────────────
 
@@ -71,18 +83,11 @@ circuit meter_store(
 ) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/metering
-    status production
     precision B
-    povc true
     observe metrics: [store_metering_ops]
     monitor "store_metering_rate" { store_metering_ops < 5000/s }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
-    test golden "meter_store_basic" {
-        let uid = bytes(16, 0x01)
-        let record = meter_store(uid, 256)
-        assert record != null
-    }
 {
     let dims = polykit_metering::DimensionValues {
         executions: 1,
@@ -102,9 +107,7 @@ circuit meter_autofill(
 ) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/metering
-    status production
     precision B
-    povc true
     observe metrics: [autofill_metering_ops]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
@@ -128,9 +131,7 @@ circuit meter_share(
 ) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/metering
-    status production
     precision B
-    povc true
     observe metrics: [share_metering_ops]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
@@ -154,9 +155,7 @@ circuit meter_breach_check(
 ) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/metering
-    status production
     precision B
-    povc true
     observe metrics: [breach_metering_ops]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
@@ -182,9 +181,7 @@ circuit check_pass_tier_limits(
 ) -> list<string>
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/metering
-    status production
     precision B
-    povc true
     observe metrics: [tier_checks, tier_violations]
     meters [compute_cycles, memory_bytes]
 {
@@ -221,7 +218,6 @@ circuit get_pass_usage(
 ) -> PassUsageSummary
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/metering
-    status production
     precision B
     observe metrics: [usage_queries]
     wasm_abi [eslite_query, now]
@@ -238,4 +234,12 @@ circuit get_pass_usage(
         dimensions: base,
         period_start: now_ns() / 1000000,
     }
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "meter_store_basic" {
+    let uid = bytes(16, 0x01)
+    let record = meter_store(uid, 256)
+    assert record != null
 }

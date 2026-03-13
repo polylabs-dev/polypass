@@ -1,21 +1,17 @@
-/// Poly Pass Audit — Breach detection, password strength, and vault health
-/// k-anonymity breach checking (HaveIBeenPwned-style), strength scoring, reuse detection
-/// govern lex esn/global/org/polylabs/pass
+// Poly Pass Audit — Password strength scoring, reuse detection, vault health (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass/audit
+//   Strength scoring via entropy analysis. Reuse detection via hash grouping.
+//   Health reports aggregate breach, strength, age, 2FA, passkey coverage.
+//   Breach checking moved to polypass_breach.fl for isolation.
 
 import polykit_identity
 import polykit_metering
 
-// ── Types ───────────────────────────────────────────────────────
+// ── Data Declarations (Stratum + Cortex) ────────────────────────
 
-type BreachResult = struct {
-    credential_id: bytes(16),
-    is_breached: bool,
-    breach_count: u32,
-    breach_sources: list<string>,
-    checked_at: u64,
-}
-
-type StrengthScore = struct {
+data StrengthScore : pass v1 {
     credential_id: bytes(16),
     score: u8,
     entropy_bits: u16,
@@ -27,22 +23,29 @@ type StrengthScore = struct {
     is_common_pattern: bool,
     feedback: list<string>,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/audit
+    cortex {
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
 
-type ReuseReport = struct {
+data ReuseReport : pass v1 {
     user_id: bytes(16),
     reused_groups: list<ReuseGroup>,
     total_reused: u32,
     total_credentials: u32,
     reuse_percentage: u8,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/audit
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
 
-type ReuseGroup = struct {
-    password_hash_prefix: bytes(5),
-    credential_ids: list<bytes(16)>,
-    domains: list<string>,
-}
-
-type HealthReport = struct {
+data HealthReport : pass v1 {
     user_id: bytes(16),
     total_credentials: u32,
     breached_count: u32,
@@ -55,12 +58,21 @@ type HealthReport = struct {
     overall_score: u8,
     generated_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/audit
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "pass-team"
+    }
+
+type ReuseGroup = struct {
+    password_hash_prefix: bytes(5),
+    credential_ids: list<bytes(16)>,
+    domains: list<string>,
+}
 
 // ── Streams ─────────────────────────────────────────────────────
-
-stream breach_alerts: event<BreachResult>
-    retention 7y
-    consumers [streamsight, console, governance]
 
 stream health_reports: event<HealthReport>
     retention 365d
@@ -68,90 +80,16 @@ stream health_reports: event<HealthReport>
 
 // ── Circuits ────────────────────────────────────────────────────
 
-circuit check_breach(
-    credential_id: bytes(16),
-    password_hash: bytes(32),
-    user_id: bytes(16),
-) -> BreachResult
-    profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/audit
-    status production
-    precision C
-    povc true
-    constant_time true
-    observe metrics: [breach_checks, breaches_found, breach_check_latency_ns]
-    monitor "breach_check_rate" { breach_checks < 100/s }
-    invariant "hash_nonzero" { password_hash != zero(32) }
-    invariant "k_anonymity_prefix" { len(bit_slice(sha1(password_hash), 0, 40)) >= 5 }
-    meters [compute_cycles, memory_bytes, bandwidth]
-    wasm_abi [now, http_fetch]
-    test golden "clean_credential" {
-        let result = check_breach(bytes(16, 0x01), bytes(32, 0xFF), bytes(16, 0x02))
-        assert result.credential_id == bytes(16, 0x01)
-    }
-{
-    let sha1_hash = sha1(password_hash)
-    let prefix = hex_encode(bit_slice(sha1_hash, 0, 40))
-    let suffix = hex_encode(bit_slice(sha1_hash, 40, 160))
-
-    // k-anonymity: only prefix leaves device, server returns all suffix matches
-    let range_response = http_fetch(concat("https://api.pwnedpasswords.com/range/", prefix))
-    let matches = parse_hibp_response(range_response)
-
-    let is_breached = false
-    let breach_count = 0
-    let sources = []
-
-    for entry in matches {
-        if constant_time_eq(entry.suffix, suffix) {
-            is_breached = true
-            breach_count = entry.count
-            sources = entry.sources
-        }
-    }
-
-    let result = BreachResult {
-        credential_id: credential_id,
-        is_breached: is_breached,
-        breach_count: breach_count,
-        breach_sources: sources,
-        checked_at: now_ns() / 1000000,
-    }
-
-    if is_breached {
-        emit(breach_alerts, result)
-    }
-
-    polykit_metering::record_usage(user_id, "pass_breach_check", DimensionValues {
-        executions: 1, hashes: 2, bandwidth: len(range_response),
-        storage: 0, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
-    })
-
-    result
-}
-
 circuit score_strength(
     credential_id: bytes(16),
     password: bytes,
 ) -> StrengthScore
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/audit
-    status production
     precision B
-    povc true
     observe metrics: [strength_scores, weak_passwords, strong_passwords]
     invariant "password_present" { len(password) > 0 }
     meters [compute_cycles, memory_bytes]
-    test golden "weak_password" {
-        let score = score_strength(bytes(16, 0x01), "password")
-        assert score.score < 30
-        assert score.is_common_pattern == true
-    }
-    test golden "strong_password" {
-        let score = score_strength(bytes(16, 0x01), "j8#kL!m9$nQ2@pR5")
-        assert score.score >= 80
-        assert score.entropy_bits >= 80
-    }
 {
     let length = len(password)
     let has_upper = regex_match(password, "[A-Z]")
@@ -205,9 +143,7 @@ circuit detect_reuse(
 ) -> ReuseReport
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/audit
-    status production
     precision B
-    povc true
     constant_time true
     observe metrics: [reuse_scans, reuse_groups_found, reuse_percentage]
     invariant "lengths_match" { len(credential_ids) == len(password_hashes) and len(credential_ids) == len(domains) }
@@ -266,9 +202,7 @@ circuit generate_health_report(
 ) -> HealthReport
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/audit
-    status production
     precision B
-    povc true
     observe metrics: [health_reports_generated, overall_scores]
     invariant "consistent_lengths" {
         len(credential_ids) == len(breach_statuses)
@@ -323,4 +257,18 @@ circuit generate_health_report(
     })
 
     report
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "weak_password" {
+    let score = score_strength(bytes(16, 0x01), "password")
+    assert score.score < 30
+    assert score.is_common_pattern == true
+}
+
+test golden "strong_password" {
+    let score = score_strength(bytes(16, 0x01), "j8#kL!m9$nQ2@pR5")
+    assert score.score >= 80
+    assert score.entropy_bits >= 80
 }

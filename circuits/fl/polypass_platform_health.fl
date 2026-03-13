@@ -1,23 +1,21 @@
-/// Poly Pass Platform Health — Blind relay telemetry for vault operations
-///
-/// Aggregates platform-wide health metrics under zero-linkage privacy:
-///   - SPARK identity blinded via HKDF("poly-pass-telemetry-v1")
-///   - k-Anonymity cohort enforcement (min 50 users)
-///   - Differential privacy noise on all emitted metrics
-///   - Temporal aggregation (1h minimum window)
-///
-/// Lex Architecture:
-///   esn/global/org/polylabs/pass
-///     └── sub_lex vault fan_in  ← per-vault health; aggregates fan up
-///
-/// govern lex esn/global/org/polylabs/pass
+// Poly Pass Platform Health — Blind relay telemetry for vault operations (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass
+//     └── sub_lex vault fan_in  ← per-vault health; aggregates fan up
+//
+// Aggregates platform-wide health metrics under zero-linkage privacy:
+//   - SPARK identity blinded via HKDF("poly-pass-telemetry-v1")
+//   - k-Anonymity cohort enforcement (min 50 users)
+//   - Differential privacy noise on all emitted metrics
+//   - Temporal aggregation (1h minimum window)
 
 import polykit_blind_telemetry from "../../polykit/circuits/fl/polykit_blind_telemetry.fl"
 import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
 
-// ── Data Declarations with Stratum + Cortex ─────────────────────────
+// ── Data Declarations (Stratum + Cortex) ────────────────────────
 
-data PlatformMetrics : app v1 {
+data PlatformMetrics : pass v1 {
     blinded_pass_id: bytes(32),
     window_start_ms: u64,
     window_end_ms: u64,
@@ -39,7 +37,7 @@ data PlatformMetrics : app v1 {
         on_anomaly alert "pass-team"
     }
 
-data PassHealthSnapshot : app v1 {
+data PassHealthSnapshot : pass v1 {
     period_start_ms: u64,
     period_end_ms: u64,
     total_queries: u64,
@@ -64,7 +62,7 @@ type PassHealthStatus = enum {
     Critical,
 }
 
-// ── Streams ─────────────────────────────────────────────────────────
+// ── Streams ─────────────────────────────────────────────────────
 
 stream pass_health_events: event<PlatformMetrics>
     retention 365d
@@ -75,14 +73,14 @@ stream pass_anomaly_events: event<PassHealthSnapshot>
     retention forever
     consumers [streamsight, governance, alerting]
 
-// ── Series ──────────────────────────────────────────────────────────
+// ── Series ──────────────────────────────────────────────────────
 
 series pass_health_series: pass_health_events
     merkle_chain true
     lattice_imprint true
     witness_attest true
 
-// ── Core Circuit: Platform Health ───────────────────────────────────
+// ── Circuits ────────────────────────────────────────────────────
 
 circuit polypass_platform_health(
     spark_id: bytes(32),
@@ -102,10 +100,8 @@ circuit polypass_platform_health(
         audit_trail true
         sub_lex vault fan_in
     }
-    status production
     precision C
     streamsight true
-    povc true
     constant_time true
     esz_emit "verify/polypass_platform_health.esz"
     li_feed full_escir true, optimized_ir true, optimization_metadata true
@@ -121,21 +117,6 @@ circuit polypass_platform_health(
     meters [compute_cycles, memory_bytes, bandwidth_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
     fuzz_target
-    test golden "full_health_pipeline" {
-        let spark = bytes(32, 0xAA)
-        let result = polypass_platform_health(spark, 75, 0, 3600000, 100, 50, 200, 80, 10, 30)
-        assert result != none
-    }
-    test golden "rejects_small_cohort" {
-        let spark = bytes(32, 0xBB)
-        let result = polypass_platform_health(spark, 20, 0, 3600000, 50, 10, 30, 5, 2, 1)
-        assert result == none
-    }
-    test golden "rejects_short_window" {
-        let spark = bytes(32, 0xCC)
-        let result = polypass_platform_health(spark, 100, 0, 1800000, 50, 10, 30, 5, 2, 1)
-        assert result == none
-    }
 {
     let ts = now_ns() / 1000000
 
@@ -197,8 +178,6 @@ circuit polypass_platform_health(
     some(metrics)
 }
 
-// ── Secondary Circuit: Anomaly Check with Cortex AI Feed ────────────
-
 circuit polypass_anomaly_check(
     window_start_ms: u64,
     window_end_ms: u64,
@@ -210,10 +189,8 @@ circuit polypass_anomaly_check(
     lex esn/global/org/polylabs/pass {
         sub_lex vault fan_in
     }
-    status production
     precision B
     streamsight true
-    povc true
     observe metrics: [anomaly_checks, anomaly_triggers, degraded_periods, critical_periods]
     monitor "anomaly_trigger_rate" { anomaly_triggers < 100/hr }
     invariant "valid_window" { window_end_ms > window_start_ms }
@@ -224,14 +201,6 @@ circuit polypass_anomaly_check(
         ai_feed true
         infer on_write
         on_anomaly alert "pass-team"
-    }
-    test golden "healthy_state" {
-        let status = polypass_anomaly_check(0, 3600000, 100, 500, 200)
-        assert status == PassHealthStatus::Healthy
-    }
-    test golden "degraded_state" {
-        let status = polypass_anomaly_check(0, 3600000, 4000, 500, 200)
-        assert status == PassHealthStatus::Degraded
     }
 {
     let breach_anomaly = streamsight_anomaly(breach_checks)
@@ -261,4 +230,34 @@ circuit polypass_anomaly_check(
     } else {
         PassHealthStatus::Healthy
     }
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "full_health_pipeline" {
+    let spark = bytes(32, 0xAA)
+    let result = polypass_platform_health(spark, 75, 0, 3600000, 100, 50, 200, 80, 10, 30)
+    assert result != none
+}
+
+test golden "rejects_small_cohort" {
+    let spark = bytes(32, 0xBB)
+    let result = polypass_platform_health(spark, 20, 0, 3600000, 50, 10, 30, 5, 2, 1)
+    assert result == none
+}
+
+test golden "rejects_short_window" {
+    let spark = bytes(32, 0xCC)
+    let result = polypass_platform_health(spark, 100, 0, 1800000, 50, 10, 30, 5, 2, 1)
+    assert result == none
+}
+
+test golden "healthy_state" {
+    let status = polypass_anomaly_check(0, 3600000, 100, 500, 200)
+    assert status == PassHealthStatus::Healthy
+}
+
+test golden "degraded_state" {
+    let status = polypass_anomaly_check(0, 3600000, 4000, 500, 200)
+    assert status == PassHealthStatus::Degraded
 }

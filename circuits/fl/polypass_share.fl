@@ -1,13 +1,16 @@
-/// Poly Pass Share — Credential sharing with ML-KEM-1024 key re-wrapping
-/// Per-recipient key wrapping, shared vaults, revocation
-/// govern lex esn/global/org/polylabs/pass
+// Poly Pass Share — Credential sharing with ML-KEM-1024 key re-wrapping (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass/share
+//   Per-recipient key wrapping via ML-KEM-1024 encapsulation.
+//   Shared vaults with member limits. Revocation with PQ-signed proofs.
 
 import polykit_identity
 import polykit_metering
 
-// ── Types ───────────────────────────────────────────────────────
+// ── Data Declarations (Stratum + Cortex) ────────────────────────
 
-type ShareInvitation = struct {
+data ShareInvitation : pass v1 {
     invitation_id: bytes(16),
     sender_id: bytes(16),
     recipient_pubkey: bytes(1568),
@@ -18,8 +21,16 @@ type ShareInvitation = struct {
     signature: bytes(4627),
     created_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/share
+    cortex {
+        redact [wrapped_key, signature]
+        obfuscate [sender_id]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
 
-type SharedCredential = struct {
+data SharedCredential : pass v1 {
     credential_id: bytes(16),
     owner_id: bytes(16),
     recipient_id: bytes(16),
@@ -28,8 +39,16 @@ type SharedCredential = struct {
     state: u8,
     shared_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/share
+    cortex {
+        redact [wrapped_key]
+        obfuscate [owner_id, recipient_id]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
 
-type SharedVault = struct {
+data SharedVault : pass v1 {
     vault_id: bytes(16),
     name: bytes(128),
     owner_id: bytes(16),
@@ -37,13 +56,26 @@ type SharedVault = struct {
     max_members: u32,
     created_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/share
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "pass-team"
+    }
 
-type RewrapResult = struct {
+data RewrapResult : pass v1 {
     credential_id: bytes(16),
     recipient_id: bytes(16),
     new_wrapped_key: bytes(1568),
     rewrapped_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/share
+    cortex {
+        redact [new_wrapped_key]
+        infer on_write
+    }
 
 // ── Enums ───────────────────────────────────────────────────────
 
@@ -83,39 +115,16 @@ circuit share_credential(
 ) -> ShareInvitation
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/share
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [shares_created, share_latency_ns]
     monitor "share_rate" { shares_created < 50/s }
     invariant "key_nonzero" { credential_key != zero(32) }
     invariant "valid_permission" { permission <= 2 }
     invariant "valid_ttl" { ttl_days > 0 and ttl_days <= 3650 }
+    property safety "no_key_leak" { output contains no credential_key bits }
     meters [compute_cycles, memory_bytes]
     wasm_abi [csprng, now]
-    test golden "share_read_only" {
-        let sk = bytes(4896, 0xBB)
-        let rpk = bytes(1568, 0xCC)
-        let inv = share_credential(bytes(16, 0x01), bytes(16, 0x02), bytes(32, 0xAA), rpk, 0, 30, sk)
-        assert len(inv.wrapped_key) == 1568
-        assert inv.permission == 0
-    }
-    kat_vector "mlkem_encaps_share" {
-        pk: bytes(1568, 0xCC)
-        function: mlkem_encaps
-    }
-    kat_vector "hkdf_sha3_share_wrap" {
-        ikm: bytes(32, 0xAA)
-        info: "share-key-wrap"
-        length: 32
-        function: hkdf_sha3
-    }
-    kat_vector "mldsa_sign_share" {
-        sk: bytes(4896, 0xBB)
-        message: bytes(128, 0xCC)
-        function: mldsa_sign
-    }
 {
     let ts = now_ns() / 1000000
     let kem = mlkem_encaps(recipient_pubkey)
@@ -158,9 +167,7 @@ circuit accept_share(
 ) -> SharedCredential
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/share
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [shares_accepted, accept_latency_ns, accept_failures]
     invariant "signature_valid" {
@@ -184,7 +191,7 @@ circuit accept_share(
         recipient_id: recipient_id,
         wrapped_key: invitation.wrapped_key,
         permission: invitation.permission,
-        state: 1,  // Active
+        state: 1,
         shared_at: ts,
     }
 
@@ -206,9 +213,7 @@ circuit revoke_share(
 ) -> bool
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/share
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [shares_revoked, revoke_latency_ns]
     meters [compute_cycles, memory_bytes]
@@ -224,7 +229,7 @@ circuit revoke_share(
         recipient_id: recipient_id,
         wrapped_key: zero(1568),
         permission: 0,
-        state: 2,  // Revoked
+        state: 2,
         shared_at: ts,
     }
 
@@ -246,20 +251,12 @@ circuit create_shared_vault(
 ) -> SharedVault
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/share
-    status production
     precision C
-    povc true
     observe metrics: [shared_vaults_created]
     invariant "name_present" { len(name) > 0 }
     invariant "max_members_valid" { max_members >= 2 and max_members <= 1000 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [csprng, now, eslite_insert]
-    test golden "create_family_vault" {
-        let sk = bytes(4896, 0xBB)
-        let vault = create_shared_vault(bytes(16, 0x01), "Family", 6, sk)
-        assert vault.max_members == 6
-        assert vault.member_count == 1
-    }
 {
     let ts = now_ns() / 1000000
     let vault_id = bit_slice(sha3_256(concat(owner_id, name, csprng(16))), 0, 128)
@@ -292,12 +289,11 @@ circuit rewrap_for_recipient(
 ) -> RewrapResult
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/share
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [rewrap_ops, rewrap_latency_ns]
     invariant "key_nonzero" { credential_key != zero(32) }
+    property safety "no_key_leak" { output contains no credential_key bits }
     meters [compute_cycles, memory_bytes]
     wasm_abi [now]
 {
@@ -311,4 +307,39 @@ circuit rewrap_for_recipient(
         new_wrapped_key: kem.ciphertext,
         rewrapped_at: now_ns() / 1000000,
     }
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "share_read_only" {
+    let sk = bytes(4896, 0xBB)
+    let rpk = bytes(1568, 0xCC)
+    let inv = share_credential(bytes(16, 0x01), bytes(16, 0x02), bytes(32, 0xAA), rpk, 0, 30, sk)
+    assert len(inv.wrapped_key) == 1568
+    assert inv.permission == 0
+}
+
+test golden "create_family_vault" {
+    let sk = bytes(4896, 0xBB)
+    let vault = create_shared_vault(bytes(16, 0x01), "Family", 6, sk)
+    assert vault.max_members == 6
+    assert vault.member_count == 1
+}
+
+kat_vector "mlkem_encaps_share" {
+    pk: bytes(1568, 0xCC)
+    function: mlkem_encaps
+}
+
+kat_vector "hkdf_sha3_share_wrap" {
+    ikm: bytes(32, 0xAA)
+    info: "share-key-wrap"
+    length: 32
+    function: hkdf_sha3
+}
+
+kat_vector "mldsa_sign_share" {
+    sk: bytes(4896, 0xBB)
+    message: bytes(128, 0xCC)
+    function: mldsa_sign
 }

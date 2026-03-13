@@ -1,0 +1,550 @@
+// Poly Pass RBAC — Role-based access control graph for enterprise vaults (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass/rbac
+//   Fine-grained RBAC with bitmask permissions, role inheritance, expiry,
+//   and audit trail. Integrates with Poly OAuth for enterprise SSO.
+//   Supports org hierarchy, vault-level ACLs, and credential-level overrides.
+//
+// Permission bitmask:
+//   0x01 READ          — view credential metadata
+//   0x02 DECRYPT       — decrypt credential value
+//   0x04 WRITE         — create/update credentials
+//   0x08 SHARE         — share credentials or invite to vault
+//   0x10 DELETE        — delete credentials
+//   0x20 ADMIN         — manage vault members and roles
+//   0x40 AUDIT         — view audit logs
+//   0x80 EXPORT        — export vault contents
+
+import polykit_identity
+import polykit_metering
+import polykit_governance
+
+// ── Enums ───────────────────────────────────────────────────────
+
+type RbacRole = enum {
+    Viewer,
+    User,
+    Manager,
+    Admin,
+    Owner,
+    Custom,
+}
+
+type RbacDecision = enum {
+    Allow,
+    Deny,
+    Escalate,
+}
+
+// ── Data: Node types (Stratum store graph + Cortex) ─────────────
+
+data RoleNode : pass v1 {
+    role_id: string,
+    org_id: string,
+    name: string,
+    description: string,
+    permission_mask: u64,
+    inherits_from: list<string>,
+    max_vault_access: u32,
+    max_credential_access: u32,
+    created_by: string,
+    created_at: u64,
+    updated_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/pass/rbac
+    cortex {
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+data PrincipalNode : pass v1 {
+    principal_id: string,
+    org_id: string,
+    display_name_hash: string,
+    email_hash: string,
+    signing_pubkey: string,
+    active: bool,
+    mfa_required: bool,
+    last_auth_at: u64,
+    created_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/pass/rbac
+    cortex {
+        obfuscate [principal_id, email_hash]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+data OrgNode : pass v1 {
+    org_id: string,
+    name: string,
+    parent_org_id: string,
+    policy_mask: u64,
+    max_members: u32,
+    member_count: u32,
+    vault_count: u32,
+    sso_provider: string,
+    created_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/pass/rbac
+    cortex {
+        infer on_write
+        on_anomaly alert "pass-team"
+    }
+
+data RbacAuditEntry : pass v1 {
+    entry_id: string,
+    principal_id: string,
+    action: string,
+    resource_id: string,
+    resource_type: string,
+    decision: u8,
+    effective_mask: u64,
+    reason: string,
+    timestamp: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/pass/rbac
+    cortex {
+        obfuscate [principal_id]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+// ── Edge types ──────────────────────────────────────────────────
+
+type HasRoleEdge = struct {
+    edge_id: bytes(16),
+    role_id: string,
+    granted_at: u64,
+    granted_by: string,
+    expires_at: u64,
+    scope_vault_id: string,
+}
+
+type RoleInheritsEdge = struct {
+    edge_id: bytes(16),
+    priority: u8,
+    created_at: u64,
+}
+
+type OrgMemberEdge = struct {
+    edge_id: bytes(16),
+    joined_at: u64,
+    department: string,
+}
+
+// ── State Machine ───────────────────────────────────────────────
+
+state_machine rbac_assignment {
+    initial ACTIVE
+    persistence wal
+    terminal [REVOKED, EXPIRED]
+    li_anomaly_detection true
+
+    ACTIVE -> EXPIRED when ttl_expired
+    ACTIVE -> REVOKED when admin_revoked
+    ACTIVE -> ACTIVE when permission_updated guard admin_signed
+}
+
+// ── Graph definition ────────────────────────────────────────────
+
+graph rbac_graph {
+    node RoleNode
+    node PrincipalNode
+    node OrgNode
+    edge HasRoleEdge
+    edge RoleInheritsEdge
+    edge OrgMemberEdge
+
+    overlay effective_mask: u64 curate delta_curate
+    overlay auth_count: u32 curate delta_curate
+    overlay last_auth_ns: u64 curate delta_curate
+    overlay deny_count: u32 curate delta_curate
+
+    storage csr {
+        hot @bram,
+        warm @ddr,
+        cold @nvme,
+    }
+
+    ai_feed rbac_anomaly
+
+    observe rbac_graph: [effective_mask, deny_count, auth_count] threshold: {
+        anomaly_score 0.90
+        baseline_window 300
+    }
+}
+
+series rbac_series: rbac_graph
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream rbac_events: event<RbacAuditEntry>
+    retention 7y
+    consumers [governance, audit, streamsight, pass_security]
+
+stream rbac_grant_events: event<HasRoleEdge>
+    retention 7y
+    consumers [governance, audit, streamsight]
+
+// ── Circuits: Role Management ───────────────────────────────────
+
+circuit create_role(
+    org_id: string,
+    name: string,
+    description: string,
+    permission_mask: u64,
+    inherits_from: list<string>,
+    max_vault_access: u32,
+    max_credential_access: u32,
+    admin_pk: bytes(2592),
+    signing_sk: bytes(4896),
+) -> RoleNode
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/rbac
+    precision C
+    observe metrics: [roles_created]
+    invariant "name_present" { len(name) > 0 }
+    invariant "valid_mask" { permission_mask > 0 and permission_mask <= 0xFF }
+    invariant "no_circular_inherit" { not contains(inherits_from, role_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now, csprng]
+{
+    let admin_id = polykit_identity::derive_user_id(admin_pk)
+    let ts = now_ns() / 1000000
+    let role_id = sha3_256(concat(org_id, name, csprng(16), ts))
+
+    let role = RoleNode {
+        role_id: role_id,
+        org_id: org_id,
+        name: name,
+        description: description,
+        permission_mask: permission_mask,
+        inherits_from: inherits_from,
+        max_vault_access: max_vault_access,
+        max_credential_access: max_credential_access,
+        created_by: admin_id,
+        created_at: ts,
+        updated_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(role))
+    graph_insert(rbac_graph, role)
+
+    for parent_role_id in inherits_from {
+        let edge = RoleInheritsEdge {
+            edge_id: bit_slice(sha3_256(concat(role_id, parent_role_id)), 0, 128),
+            priority: 0,
+            created_at: ts,
+        }
+        graph_connect(rbac_graph, role_id, parent_role_id, edge)
+    }
+
+    role
+}
+
+circuit assign_role(
+    principal_id: string,
+    role_id: string,
+    scope_vault_id: string,
+    expires_at: u64,
+    admin_id: string,
+    signing_sk: bytes(4896),
+) -> HasRoleEdge
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/rbac
+    precision C
+    observe metrics: [role_assignments, role_assignment_latency_ns]
+    invariant "role_exists" { graph_exists(rbac_graph, role_id) }
+    invariant "principal_exists" { graph_exists(rbac_graph, principal_id) }
+    invariant "valid_expiry" { expires_at == 0 or expires_at > now_ns() / 1000000 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let ts = now_ns() / 1000000
+
+    let edge = HasRoleEdge {
+        edge_id: bit_slice(sha3_256(concat(principal_id, role_id, scope_vault_id, ts)), 0, 128),
+        role_id: role_id,
+        granted_at: ts,
+        granted_by: admin_id,
+        expires_at: expires_at,
+        scope_vault_id: scope_vault_id,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(edge))
+    graph_connect(rbac_graph, principal_id, role_id, edge)
+
+    let role = graph_query(rbac_graph, role_id)
+    let effective = resolve_effective_mask(role)
+    overlay_set(rbac_graph, principal_id, effective_mask, effective)
+
+    emit(rbac_grant_events, edge)
+
+    polykit_metering::record_usage(admin_id, "rbac_assign_role", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 256, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    edge
+}
+
+circuit revoke_role(
+    principal_id: string,
+    role_id: string,
+    scope_vault_id: string,
+    admin_id: string,
+    signing_sk: bytes(4896),
+) -> bool
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/rbac
+    precision C
+    observe metrics: [role_revocations]
+    invariant "assignment_exists" { graph_edge_exists(rbac_graph, principal_id, role_id, HasRoleEdge) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let ts = now_ns() / 1000000
+
+    let edge = graph_get_edge(rbac_graph, principal_id, role_id, HasRoleEdge)
+    state_transition(rbac_assignment, edge.edge_id, admin_revoked)
+    graph_disconnect(rbac_graph, principal_id, role_id, HasRoleEdge)
+
+    let remaining_roles = graph_traverse(rbac_graph, principal_id, HasRoleEdge)
+    let new_mask = 0
+    for role_edge in remaining_roles {
+        let role = graph_query(rbac_graph, role_edge.role_id)
+        new_mask = new_mask | resolve_effective_mask(role)
+    }
+    overlay_set(rbac_graph, principal_id, effective_mask, new_mask)
+
+    let _sig = mldsa_sign(signing_sk, concat(principal_id, role_id, "revoke", ts))
+
+    let audit = RbacAuditEntry {
+        entry_id: sha3_256(concat(principal_id, role_id, "revoke", ts)),
+        principal_id: principal_id,
+        action: "revoke_role",
+        resource_id: role_id,
+        resource_type: "role",
+        decision: 0,
+        effective_mask: new_mask,
+        reason: concat("revoked by ", admin_id),
+        timestamp: ts,
+    }
+    emit(rbac_events, audit)
+
+    true
+}
+
+// ── Circuits: Access Check ──────────────────────────────────────
+
+circuit check_access(
+    principal_id: string,
+    resource_id: string,
+    resource_type: string,
+    required_permission: u64,
+    vault_scope: string,
+) -> RbacDecision
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/rbac
+    precision C
+    constant_time true
+    observe metrics: [access_checks, access_allowed, access_denied, access_escalated]
+    monitor "deny_rate" { access_denied / access_checks < 0.3 }
+    invariant "principal_exists" { graph_exists(rbac_graph, principal_id) }
+    property safety "deny_default" { no_permission implies deny }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, now]
+{
+    let ts = now_ns() / 1000000
+
+    let principal = graph_query(rbac_graph, principal_id)
+    if not principal.active {
+        let audit = RbacAuditEntry {
+            entry_id: sha3_256(concat(principal_id, resource_id, ts)),
+            principal_id: principal_id,
+            action: "access_check",
+            resource_id: resource_id,
+            resource_type: resource_type,
+            decision: 1,
+            effective_mask: 0,
+            reason: "principal_inactive",
+            timestamp: ts,
+        }
+        emit(rbac_events, audit)
+        overlay_increment(rbac_graph, principal_id, deny_count, 1)
+        return RbacDecision::Deny
+    }
+
+    let role_edges = graph_traverse(rbac_graph, principal_id, HasRoleEdge)
+    let effective_mask = 0
+
+    for re in role_edges {
+        if re.expires_at != 0 and re.expires_at < ts {
+            continue
+        }
+        if len(vault_scope) > 0 and len(re.scope_vault_id) > 0 and re.scope_vault_id != vault_scope {
+            continue
+        }
+
+        let role = graph_query(rbac_graph, re.role_id)
+        effective_mask = effective_mask | resolve_effective_mask(role)
+    }
+
+    let decision = if (effective_mask & required_permission) == required_permission {
+        RbacDecision::Allow
+    } else if principal.mfa_required and (effective_mask & (required_permission >> 1)) > 0 {
+        RbacDecision::Escalate
+    } else {
+        RbacDecision::Deny
+    }
+
+    let audit = RbacAuditEntry {
+        entry_id: sha3_256(concat(principal_id, resource_id, ts)),
+        principal_id: principal_id,
+        action: "access_check",
+        resource_id: resource_id,
+        resource_type: resource_type,
+        decision: match decision { RbacDecision::Allow => 0, RbacDecision::Deny => 1, RbacDecision::Escalate => 2 },
+        effective_mask: effective_mask,
+        reason: "",
+        timestamp: ts,
+    }
+    emit(rbac_events, audit)
+
+    overlay_increment(rbac_graph, principal_id, auth_count, 1)
+    overlay_set(rbac_graph, principal_id, last_auth_ns, ts * 1000000)
+
+    if decision == RbacDecision::Deny {
+        overlay_increment(rbac_graph, principal_id, deny_count, 1)
+    }
+
+    decision
+}
+
+// ── Circuits: Resolution helpers ────────────────────────────────
+
+circuit resolve_effective_mask(
+    role: RoleNode,
+) -> u64
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/rbac
+    precision B
+{
+    let mask = role.permission_mask
+
+    for parent_id in role.inherits_from {
+        let parent = graph_query(rbac_graph, parent_id)
+        mask = mask | resolve_effective_mask(parent)
+    }
+
+    mask
+}
+
+circuit get_principal_roles(
+    principal_id: string,
+) -> list<RoleNode>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/rbac
+    precision B
+    observe metrics: [role_queries]
+{
+    let edges = graph_traverse(rbac_graph, principal_id, HasRoleEdge)
+    let roles = []
+    let ts = now_ns() / 1000000
+
+    for re in edges {
+        if re.expires_at == 0 or re.expires_at > ts {
+            let role = graph_query(rbac_graph, re.role_id)
+            roles = append(roles, role)
+        }
+    }
+
+    roles
+}
+
+circuit get_org_members(
+    org_id: string,
+) -> list<PrincipalNode>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/rbac
+    precision B
+    observe metrics: [org_member_queries]
+{
+    graph_traverse(rbac_graph, org_id, OrgMemberEdge)
+}
+
+// ── Circuits: Built-in Roles ────────────────────────────────────
+
+circuit create_default_roles(
+    org_id: string,
+    admin_pk: bytes(2592),
+    signing_sk: bytes(4896),
+) -> list<RoleNode>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/rbac
+    precision C
+    observe metrics: [default_role_sets_created]
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now, csprng]
+{
+    let viewer = create_role(org_id, "Viewer", "Read-only access", 0x01, [], 0, 0, admin_pk, signing_sk)
+    let user = create_role(org_id, "User", "Standard credential access", 0x07, [viewer.role_id], 0, 0, admin_pk, signing_sk)
+    let manager = create_role(org_id, "Manager", "Vault management and sharing", 0x2F, [user.role_id], 0, 0, admin_pk, signing_sk)
+    let admin = create_role(org_id, "Admin", "Full administrative access", 0x7F, [manager.role_id], 0, 0, admin_pk, signing_sk)
+    let owner = create_role(org_id, "Owner", "Organization owner with export", 0xFF, [admin.role_id], 0, 0, admin_pk, signing_sk)
+
+    [viewer, user, manager, admin, owner]
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "create_viewer_role" {
+    let pk = bytes(2592, 0xAA)
+    let sk = bytes(4896, 0xBB)
+    let role = create_role("org1", "Viewer", "Read-only", 0x01, [], 0, 0, pk, sk)
+    assert role.permission_mask == 0x01
+    assert role.name == "Viewer"
+}
+
+test golden "access_check_allow" {
+    let pk = bytes(2592, 0xAA)
+    let sk = bytes(4896, 0xBB)
+    let role = create_role("org1", "User", "Standard", 0x07, [], 0, 0, pk, sk)
+    let decision = check_access("principal1", "cred1", "credential", 0x01, "")
+    assert decision == RbacDecision::Allow
+}
+
+test golden "access_check_deny" {
+    let decision = check_access("principal_no_role", "cred1", "credential", 0x80, "")
+    assert decision == RbacDecision::Deny
+}
+
+test golden "default_roles_hierarchy" {
+    let pk = bytes(2592, 0xAA)
+    let sk = bytes(4896, 0xBB)
+    let roles = create_default_roles("org1", pk, sk)
+    assert len(roles) == 5
+}
+
+fuzz_target "access_check_fuzz" {
+    inputs {
+        principal_id: string(1..128)
+        resource_id: string(1..128)
+        resource_type: string(1..64)
+        required_permission: u64
+        vault_scope: string(0..128)
+    }
+    assert {
+        no_panic
+        output == RbacDecision::Allow or output == RbacDecision::Deny or output == RbacDecision::Escalate
+    }
+}

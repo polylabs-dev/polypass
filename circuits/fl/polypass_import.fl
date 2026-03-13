@@ -1,6 +1,10 @@
-/// Poly Pass Import — Multi-format credential import with deduplication
-/// Supports 9 formats: 1Password, Bitwarden, LastPass, Dashlane, Chrome, Firefox, Safari, KeePass, Proton Pass
-/// govern lex esn/global/org/polylabs/pass
+// Poly Pass Import — Multi-format credential import with deduplication (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass/import
+//   Supports 12 formats: 1Password (CSV/1pux), Bitwarden (JSON/CSV), LastPass,
+//   Dashlane (Dash/CSV), Chrome, Firefox, Safari, KeePass, Proton Pass.
+//   Deduplication via domain+username hash matching with configurable actions.
 
 import polykit_identity
 import polykit_metering
@@ -22,9 +26,15 @@ type ImportFormat = enum {
     ProtonPassJson,
 }
 
-// ── Types ───────────────────────────────────────────────────────
+type DuplicateAction = enum {
+    Skip,
+    Replace,
+    KeepBoth,
+}
 
-type ImportResult = struct {
+// ── Data Declarations (Stratum + Cortex) ────────────────────────
+
+data ImportResult : pass v1 {
     format: u8,
     total_parsed: u32,
     imported: u32,
@@ -33,14 +43,28 @@ type ImportResult = struct {
     errors: u32,
     import_time_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/import
+    cortex {
+        infer on_write
+        on_anomaly alert "pass-team"
+    }
 
-type DuplicateMatch = struct {
+data DuplicateMatch : pass v1 {
     existing_credential_id: bytes(16),
     imported_domain: string,
     imported_username_hash: bytes(32),
     similarity_score: u16,
     action: u8,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/import
+    cortex {
+        obfuscate [imported_username_hash]
+        infer on_write
+    }
+
+// ── Value Types ─────────────────────────────────────────────────
 
 type ParsedCredential = struct {
     domain: string,
@@ -51,12 +75,6 @@ type ParsedCredential = struct {
     folder_name: option<string>,
     tags: list<string>,
     created_at: option<u64>,
-}
-
-type DuplicateAction = enum {
-    Skip,
-    Replace,
-    KeepBoth,
 }
 
 // ── Streams ─────────────────────────────────────────────────────
@@ -76,9 +94,7 @@ circuit import_csv(
 ) -> ImportResult
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/import
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [csv_imports, csv_rows_parsed, csv_import_latency_ms]
     monitor "import_size" { csv_rows_parsed < 50000 }
@@ -89,12 +105,6 @@ circuit import_csv(
     invariant "csv_nonempty" { len(raw_csv) > 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [csprng, now, eslite_insert]
-    test golden "import_chrome_csv" {
-        let csv = "name,url,username,password\nGitHub,https://github.com,user@test.com,pass123"
-        let result = import_csv(csv, 7, bytes(32, 0xAA), bytes(16, 0x01), bytes(4896, 0xBB))
-        assert result.total_parsed == 1
-        assert result.errors == 0
-    }
 {
     let start = now_ns() / 1000000
     let rows = parse_csv(raw_csv)
@@ -154,9 +164,7 @@ circuit import_1password(
 ) -> ImportResult
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/import
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [onepassword_imports, onepassword_items_parsed]
     invariant "data_nonempty" { len(raw_data) > 0 }
@@ -205,9 +213,7 @@ circuit import_bitwarden(
 ) -> ImportResult
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/import
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [bitwarden_imports, bitwarden_items_parsed]
     invariant "json_nonempty" { len(raw_json) > 0 }
@@ -251,9 +257,7 @@ circuit detect_duplicates(
 ) -> list<DuplicateMatch>
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/import
-    status production
     precision B
-    povc true
     observe metrics: [dedup_scans, duplicates_detected]
     invariant "existing_consistent" {
         len(existing_domains) == len(existing_username_hashes)
@@ -288,7 +292,7 @@ circuit detect_duplicates(
                 imported_domain: cred.domain,
                 imported_username_hash: sha3_256(cred.username),
                 similarity_score: best_score,
-                action: 0,  // Skip by default
+                action: 0,
             })
         }
     }
@@ -305,9 +309,7 @@ circuit merge_entries(
 ) -> ImportResult
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/import
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [merge_ops, entries_merged, entries_skipped, entries_kept_both]
     meters [compute_cycles, memory_bytes]
@@ -321,7 +323,6 @@ circuit merge_entries(
         if dup.action == 0 {
             skipped = skipped + 1
         } else if dup.action == 1 {
-            // Replace: re-encrypt with existing credential_id
             let idx = find_imported_by_hash(imported, dup.imported_username_hash, dup.imported_domain)
             if idx >= 0 {
                 let cred = imported[idx]
@@ -332,7 +333,6 @@ circuit merge_entries(
                 merged = merged + 1
             }
         } else if dup.action == 2 {
-            // KeepBoth: create new credential_id
             let idx = find_imported_by_hash(imported, dup.imported_username_hash, dup.imported_domain)
             if idx >= 0 {
                 let cred = imported[idx]
@@ -357,4 +357,13 @@ circuit merge_entries(
         errors: 0,
         import_time_ms: elapsed,
     }
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "import_chrome_csv" {
+    let csv = "name,url,username,password\nGitHub,https://github.com,user@test.com,pass123"
+    let result = import_csv(csv, 7, bytes(32, 0xAA), bytes(16, 0x01), bytes(4896, 0xBB))
+    assert result.total_parsed == 1
+    assert result.errors == 0
 }

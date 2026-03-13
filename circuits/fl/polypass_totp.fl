@@ -1,0 +1,431 @@
+// Poly Pass TOTP/HOTP — Time-based and counter-based OTP generation (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass/totp
+//   TOTP per RFC 6238 (time-based) and HOTP per RFC 4226 (counter-based).
+//   Seeds stored encrypted in vault; codes generated on-device only.
+//   Supports 6/8 digit codes, SHA-1/SHA-256/SHA-512 algorithms,
+//   30s/60s time steps, and configurable counter windows.
+
+import polykit_identity
+import polykit_metering
+
+// ── Enums ───────────────────────────────────────────────────────
+
+type OtpAlgorithm = enum {
+    SHA1,
+    SHA256,
+    SHA512,
+}
+
+type OtpType = enum {
+    TOTP,
+    HOTP,
+}
+
+// ── Data Declarations (Stratum + Cortex) ────────────────────────
+
+data TotpConfig : pass v1 {
+    credential_id: bytes(16),
+    encrypted_seed: bytes,
+    algorithm: u8,
+    digits: u8,
+    period_seconds: u32,
+    issuer: string,
+    account_name: string,
+    created_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/pass/totp
+    cortex {
+        redact [encrypted_seed]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+data HotpConfig : pass v1 {
+    credential_id: bytes(16),
+    encrypted_seed: bytes,
+    algorithm: u8,
+    digits: u8,
+    counter: u64,
+    issuer: string,
+    account_name: string,
+    created_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/pass/totp
+    cortex {
+        redact [encrypted_seed]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+data OtpCode : pass v1 {
+    credential_id: bytes(16),
+    code: string,
+    valid_from: u64,
+    valid_until: u64,
+    otp_type: u8,
+}
+    store kv
+    govern lex esn/global/org/polylabs/pass/totp
+    cortex {
+        redact [code]
+        infer on_write
+    }
+
+data TotpVerifyResult : pass v1 {
+    credential_id: bytes(16),
+    valid: bool,
+    drift_steps: i32,
+    verified_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/pass/totp
+    cortex {
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream totp_events: event<OtpCode>
+    retention 90d
+    consumers [streamsight, console]
+
+stream totp_verify_events: event<TotpVerifyResult>
+    retention 365d
+    consumers [streamsight, audit]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit generate_totp(
+    config: TotpConfig,
+    vault_key: bytes(32),
+    current_time_ms: u64,
+) -> OtpCode
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/totp
+    precision C
+    constant_time true
+    observe metrics: [totp_generations, totp_latency_ns]
+    invariant "valid_digits" { config.digits == 6 or config.digits == 8 }
+    invariant "valid_period" { config.period_seconds >= 15 and config.period_seconds <= 120 }
+    property safety "no_seed_leak" { output contains no config.encrypted_seed bits }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let seed = decrypt_totp_seed(config.encrypted_seed, config.credential_id, vault_key)
+
+    let time_step = current_time_ms / (config.period_seconds * 1000)
+    let time_bytes = u64_to_bytes_be(time_step)
+
+    let hmac_result = match config.algorithm {
+        0 => hmac_sha1(seed, time_bytes),
+        1 => hmac_sha256(seed, time_bytes),
+        2 => hmac_sha512(seed, time_bytes),
+    }
+
+    let code = dynamic_truncate(hmac_result, config.digits)
+    let period_ms = config.period_seconds * 1000
+    let valid_from = (time_step * period_ms)
+    let valid_until = valid_from + period_ms
+
+    OtpCode {
+        credential_id: config.credential_id,
+        code: zero_pad(code, config.digits),
+        valid_from: valid_from,
+        valid_until: valid_until,
+        otp_type: 0,
+    }
+}
+
+circuit generate_hotp(
+    config: HotpConfig,
+    vault_key: bytes(32),
+) -> OtpCode
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/totp
+    precision C
+    constant_time true
+    observe metrics: [hotp_generations, hotp_latency_ns]
+    invariant "valid_digits" { config.digits == 6 or config.digits == 8 }
+    property safety "no_seed_leak" { output contains no config.encrypted_seed bits }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now, eslite_insert]
+{
+    let seed = decrypt_totp_seed(config.encrypted_seed, config.credential_id, vault_key)
+
+    let counter_bytes = u64_to_bytes_be(config.counter)
+
+    let hmac_result = match config.algorithm {
+        0 => hmac_sha1(seed, counter_bytes),
+        1 => hmac_sha256(seed, counter_bytes),
+        2 => hmac_sha512(seed, counter_bytes),
+    }
+
+    let code = dynamic_truncate(hmac_result, config.digits)
+    let ts = now_ns() / 1000000
+
+    let updated = HotpConfig {
+        credential_id: config.credential_id,
+        encrypted_seed: config.encrypted_seed,
+        algorithm: config.algorithm,
+        digits: config.digits,
+        counter: config.counter + 1,
+        issuer: config.issuer,
+        account_name: config.account_name,
+        created_at: config.created_at,
+    }
+    eslite_insert("hotp_configs", config.credential_id, updated)
+
+    OtpCode {
+        credential_id: config.credential_id,
+        code: zero_pad(code, config.digits),
+        valid_from: ts,
+        valid_until: ts + 30000,
+        otp_type: 1,
+    }
+}
+
+circuit verify_totp(
+    config: TotpConfig,
+    vault_key: bytes(32),
+    submitted_code: string,
+    current_time_ms: u64,
+    window_size: u32,
+) -> TotpVerifyResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/totp
+    precision C
+    constant_time true
+    observe metrics: [totp_verifications, totp_verify_successes, totp_verify_failures]
+    monitor "verify_failure_rate" { totp_verify_failures / totp_verifications < 0.5 }
+    invariant "valid_window" { window_size >= 1 and window_size <= 5 }
+    invariant "code_length" { len(submitted_code) == config.digits }
+    property safety "no_seed_leak" { output contains no config.encrypted_seed bits }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let seed = decrypt_totp_seed(config.encrypted_seed, config.credential_id, vault_key)
+    let time_step = current_time_ms / (config.period_seconds * 1000)
+
+    let valid = false
+    let drift = 0
+
+    for offset in -(window_size as i32)..=(window_size as i32) {
+        let check_step = time_step + offset
+        let time_bytes = u64_to_bytes_be(check_step)
+
+        let hmac_result = match config.algorithm {
+            0 => hmac_sha1(seed, time_bytes),
+            1 => hmac_sha256(seed, time_bytes),
+            2 => hmac_sha512(seed, time_bytes),
+        }
+
+        let expected = zero_pad(dynamic_truncate(hmac_result, config.digits), config.digits)
+        if constant_time_eq(submitted_code, expected) {
+            valid = true
+            drift = offset
+        }
+    }
+
+    let result = TotpVerifyResult {
+        credential_id: config.credential_id,
+        valid: valid,
+        drift_steps: drift,
+        verified_at: now_ns() / 1000000,
+    }
+
+    emit(totp_verify_events, result)
+    result
+}
+
+circuit register_totp(
+    credential_id: bytes(16),
+    seed_plaintext: bytes,
+    algorithm: u8,
+    digits: u8,
+    period_seconds: u32,
+    issuer: string,
+    account_name: string,
+    vault_key: bytes(32),
+    user_id: bytes(16),
+) -> TotpConfig
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/totp
+    precision C
+    constant_time true
+    observe metrics: [totp_registrations]
+    invariant "valid_algorithm" { algorithm <= 2 }
+    invariant "valid_digits" { digits == 6 or digits == 8 }
+    invariant "valid_period" { period_seconds >= 15 and period_seconds <= 120 }
+    invariant "seed_present" { len(seed_plaintext) >= 10 }
+    property safety "no_seed_leak" { output contains no seed_plaintext bits }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [csprng, now, eslite_insert]
+{
+    let encrypted_seed = encrypt_totp_seed(seed_plaintext, credential_id, vault_key)
+    let ts = now_ns() / 1000000
+
+    let config = TotpConfig {
+        credential_id: credential_id,
+        encrypted_seed: encrypted_seed,
+        algorithm: algorithm,
+        digits: digits,
+        period_seconds: period_seconds,
+        issuer: issuer,
+        account_name: account_name,
+        created_at: ts,
+    }
+
+    eslite_insert("totp_configs", credential_id, config)
+
+    polykit_metering::record_usage(user_id, "pass_totp_register", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
+    })
+
+    config
+}
+
+circuit parse_totp_uri(
+    otpauth_uri: string,
+) -> option<TotpConfig>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/totp
+    precision B
+    observe metrics: [uri_parses, uri_parse_failures]
+    invariant "uri_scheme" { starts_with(otpauth_uri, "otpauth://totp/") or starts_with(otpauth_uri, "otpauth://hotp/") }
+{
+    let params = parse_uri_params(otpauth_uri)
+    if params == none { return none }
+    let p = unwrap(params)
+
+    let algorithm = match p.algorithm {
+        "SHA1" => 0,
+        "SHA256" => 1,
+        "SHA512" => 2,
+        _ => 0,
+    }
+
+    let digits = if p.digits != none { unwrap(p.digits) } else { 6 }
+    let period = if p.period != none { unwrap(p.period) } else { 30 }
+
+    some(TotpConfig {
+        credential_id: zero(16),
+        encrypted_seed: base32_decode(p.secret),
+        algorithm: algorithm,
+        digits: digits,
+        period_seconds: period,
+        issuer: if p.issuer != none { unwrap(p.issuer) } else { "" },
+        account_name: p.account_name,
+        created_at: 0,
+    })
+}
+
+// ── Internal helpers ────────────────────────────────────────────
+
+circuit decrypt_totp_seed(
+    encrypted_seed: bytes,
+    credential_id: bytes(16),
+    vault_key: bytes(32),
+) -> bytes
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/totp
+    precision C
+    constant_time true
+{
+    let seed_key = hkdf_sha3(vault_key, concat("totp-seed-key:", credential_id), 32)
+    aes_gcm_decrypt(seed_key, bit_slice(encrypted_seed, 0, 96), bit_slice(encrypted_seed, 96, len(encrypted_seed) * 8 - 96 - 128), credential_id, bit_slice(encrypted_seed, len(encrypted_seed) * 8 - 128, 128))
+}
+
+circuit encrypt_totp_seed(
+    seed_plaintext: bytes,
+    credential_id: bytes(16),
+    vault_key: bytes(32),
+) -> bytes
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/totp
+    precision C
+    constant_time true
+    wasm_abi [csprng]
+{
+    let seed_key = hkdf_sha3(vault_key, concat("totp-seed-key:", credential_id), 32)
+    let nonce = csprng(12)
+    let (ct, tag) = aes_gcm_encrypt(seed_key, nonce, seed_plaintext, credential_id)
+    concat(nonce, ct, tag)
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "totp_6_digit_sha1" {
+    let config = TotpConfig {
+        credential_id: bytes(16, 0x01),
+        encrypted_seed: bytes(64, 0xAA),
+        algorithm: 0,
+        digits: 6,
+        period_seconds: 30,
+        issuer: "GitHub",
+        account_name: "user@test.com",
+        created_at: 0,
+    }
+    let code = generate_totp(config, bytes(32, 0xBB), 59000)
+    assert len(code.code) == 6
+    assert code.otp_type == 0
+}
+
+test golden "totp_8_digit_sha256" {
+    let config = TotpConfig {
+        credential_id: bytes(16, 0x02),
+        encrypted_seed: bytes(64, 0xCC),
+        algorithm: 1,
+        digits: 8,
+        period_seconds: 30,
+        issuer: "AWS",
+        account_name: "admin@company.com",
+        created_at: 0,
+    }
+    let code = generate_totp(config, bytes(32, 0xDD), 1111111109000)
+    assert len(code.code) == 8
+}
+
+test golden "hotp_generation" {
+    let config = HotpConfig {
+        credential_id: bytes(16, 0x03),
+        encrypted_seed: bytes(64, 0xEE),
+        algorithm: 0,
+        digits: 6,
+        counter: 0,
+        issuer: "Test",
+        account_name: "test@example.com",
+        created_at: 0,
+    }
+    let code = generate_hotp(config, bytes(32, 0xFF))
+    assert len(code.code) == 6
+    assert code.otp_type == 1
+}
+
+kat_vector "hmac_sha1_rfc4226" {
+    key: hex("3132333435363738393031323334353637383930")
+    counter: 0
+    function: hmac_sha1
+    post_condition: {
+        dynamic_truncate(output, 6) == 755224
+    }
+}
+
+fuzz_target "totp_generation_fuzz" {
+    inputs {
+        seed: bytes(10..64)
+        algorithm: u8 { 0..2 }
+        digits: u8 { 6, 8 }
+        period: u32 { 15..120 }
+        time_ms: u64
+    }
+    assert {
+        no_panic
+        len(output.code) == digits
+    }
+}

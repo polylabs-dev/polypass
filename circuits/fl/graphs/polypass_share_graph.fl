@@ -1,7 +1,9 @@
-/// Poly Pass Share Graph — Stratum graph storage + Cortex AI governance
-/// Sharing relationships: users, shared vaults, credentials as nodes;
-/// share permissions as typed edges with access levels
-/// govern lex esn/global/org/polylabs/pass
+// Poly Pass Share Graph — Stratum graph storage + Cortex AI governance (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass
+//   Sharing relationships: users, shared vaults, credentials as nodes;
+//   share permissions as typed edges with access levels.
 
 import polykit_identity
 import polykit_metering
@@ -25,7 +27,7 @@ type ShareLifecycleState = enum {
 
 // ── Data: Node types (Stratum store graph + Cortex) ─────────────
 
-data ShareUserNode : app v1 {
+data ShareUserNode : pass v1 {
     user_id: string,
     display_name_hash: string,
     email: string,
@@ -43,7 +45,7 @@ data ShareUserNode : app v1 {
         on_anomaly alert "pass-security"
     }
 
-data SharedVaultNode : app v1 {
+data SharedVaultNode : pass v1 {
     vault_id: string,
     owner_id: string,
     name: string,
@@ -64,7 +66,7 @@ data SharedVaultNode : app v1 {
         on_anomaly alert "pass-security"
     }
 
-data SharedCredentialNode : app v1 {
+data SharedCredentialNode : pass v1 {
     credential_id: string,
     vault_id: string,
     wrapped_key: string,
@@ -180,22 +182,14 @@ circuit register_share_user(
     email: string,
     signing_sk: bytes(4896),
 ) -> ShareUserNode
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [share_users_registered]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
     monitor "share_user_registration_rate" { share_users_registered < 50/s }
-    test golden "register_share_user" {
-        let pk = bytes(2592, 0xAA)
-        let epk = bytes(1568, 0xCC)
-        let sk = bytes(4896, 0xBB)
-        let user = register_share_user(pk, epk, "name_hash", "enc_email", sk)
-        assert len(user.user_id) > 0
-    }
 {
     let user_id = polykit_identity::derive_user_id(user_pk)
     let ts = now_ns() / 1000000
@@ -225,22 +219,14 @@ circuit create_shared_vault(
     enterprise_org_id: string,
     signing_sk: bytes(4896),
 ) -> SharedVaultNode
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     observe metrics: [shared_vaults_created, shared_vault_create_latency_ns]
     invariant "name_present" { len(name) > 0 }
     invariant "max_members_valid" { max_members >= 2 and max_members <= 1000 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now, csprng]
-    test golden "create_family_vault" {
-        let pk = bytes(2592, 0xAA)
-        let sk = bytes(4896, 0xBB)
-        let vault = create_shared_vault(pk, "Family", "Shared family vault", 6, "", sk)
-        assert vault.max_members == 6
-        assert vault.member_count == 1
-    }
 {
     let owner_id = polykit_identity::derive_user_id(owner_pk)
     let ts = now_ns() / 1000000
@@ -266,10 +252,9 @@ circuit create_shared_vault(
     let _sig = mldsa_sign(signing_sk, serialize(vault))
     graph_insert(share_network, vault)
 
-    // Owner is first member with Admin role
     let member_edge = MemberOfEdge {
         edge_id: bit_slice(sha3_256(concat(owner_id, vault_id)), 0, 128),
-        role: 3,  // Owner
+        role: 3,
         joined_at: ts,
         invited_by: owner_id,
         wrapped_vault_key: zero(1568),
@@ -294,10 +279,9 @@ circuit invite_to_vault(
     role: u8,
     signing_sk: bytes(4896),
 ) -> InvitationEdge
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [vault_invitations_sent, invitation_latency_ns]
     invariant "vault_exists" { graph_exists(share_network, vault_id) }
@@ -318,7 +302,7 @@ circuit invite_to_vault(
         sender_id: inviter_id,
         recipient_pubkey: recipient_pubkey,
         invitation_token_hash: token_hash,
-        expires_at: ts + 604800000,  // 7 days
+        expires_at: ts + 604800000,
         created_at: ts,
     }
 
@@ -342,10 +326,9 @@ circuit accept_vault_invitation(
     role: u8,
     signing_sk: bytes(4896),
 ) -> MemberOfEdge
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [vault_invitations_accepted]
     invariant "vault_exists" { graph_exists(share_network, vault_id) }
@@ -376,7 +359,6 @@ circuit accept_vault_invitation(
 
     overlay_increment(share_network, vault_id, member_count, 1)
 
-    // Transition share lifecycle
     state_transition(share_lifecycle, member_edge.edge_id, signature_verified)
 
     polykit_metering::record_usage(user_id, "graph_vault_accept", DimensionValues {
@@ -393,10 +375,9 @@ circuit revoke_vault_member(
     revoker_id: string,
     signing_sk: bytes(4896),
 ) -> bool
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     observe metrics: [vault_members_revoked]
     invariant "vault_exists" { graph_exists(share_network, vault_id) }
     invariant "not_self_revoke_owner" { member_id != revoker_id or graph_query(share_network, vault_id).owner_id != member_id }
@@ -431,10 +412,9 @@ circuit share_credential_to_vault(
     classification: u8,
     signing_sk: bytes(4896),
 ) -> SharedCredentialNode
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [credentials_shared_to_vault]
     invariant "vault_exists" { graph_exists(share_network, vault_id) }
@@ -457,10 +437,10 @@ circuit share_credential_to_vault(
 
     let access_edge = CredentialAccessEdge {
         edge_id: bit_slice(sha3_256(concat(credential_id, vault_id)), 0, 128),
-        permission: 1,  // ReadWrite for vault members
+        permission: 1,
         granted_at: ts,
         granted_by: sharer_id,
-        expires_at: 0,  // No expiry within vault
+        expires_at: 0,
     }
     graph_connect(share_network, vault_id, credential_id, access_edge)
 
@@ -476,8 +456,8 @@ circuit get_vault_members(
     graph_id: bytes(32),
     vault_id: string,
 ) -> list<ShareUserNode>
+    profile poly_framework_standard
     lex esn/global/org/polylabs/pass
-    status production
     precision B
     observe metrics: [vault_member_queries]
 {
@@ -488,8 +468,8 @@ circuit get_shared_credentials(
     graph_id: bytes(32),
     vault_id: string,
 ) -> list<SharedCredentialNode>
+    profile poly_framework_standard
     lex esn/global/org/polylabs/pass
-    status production
     precision B
     observe metrics: [shared_credential_queries]
 {
@@ -500,28 +480,21 @@ circuit get_user_vaults(
     graph_id: bytes(32),
     user_id: string,
 ) -> list<SharedVaultNode>
+    profile poly_framework_standard
     lex esn/global/org/polylabs/pass
-    status production
     precision B
     observe metrics: [user_vault_queries]
-    test golden "no_vaults_returns_empty" {
-        let vaults = get_user_vaults(bytes(32, 0x01), "NONEXIST")
-        assert vaults == []
-    }
 {
     graph_traverse(share_network, user_id, MemberOfEdge)
 }
-
-// ── Circuits: Quantum State Snapshot ────────────────────────────
 
 circuit snapshot_share_state(
     user_id: string,
     signing_sk: bytes(4896),
 ) -> string
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     observe metrics: [share_snapshots]
 {
     let vaults = graph_traverse(share_network, user_id, MemberOfEdge)
@@ -561,3 +534,26 @@ stream share_access_events: event<SharedCredentialNode>
 stream vault_membership_events: event<MemberOfEdge>
     retention 365d
     consumers [streamsight, console, governance]
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "register_share_user" {
+    let pk = bytes(2592, 0xAA)
+    let epk = bytes(1568, 0xCC)
+    let sk = bytes(4896, 0xBB)
+    let user = register_share_user(pk, epk, "name_hash", "enc_email", sk)
+    assert len(user.user_id) > 0
+}
+
+test golden "create_family_vault" {
+    let pk = bytes(2592, 0xAA)
+    let sk = bytes(4896, 0xBB)
+    let vault = create_shared_vault(pk, "Family", "Shared family vault", 6, "", sk)
+    assert vault.max_members == 6
+    assert vault.member_count == 1
+}
+
+test golden "no_vaults_returns_empty" {
+    let vaults = get_user_vaults(bytes(32, 0x01), "NONEXIST")
+    assert vaults == []
+}

@@ -1,37 +1,63 @@
-/// Poly Pass Encryption — Per-credential PQ encryption & vault key management
-/// AES-256-GCM per-credential encryption, ML-KEM-1024 vault key wrapping
-/// govern lex esn/global/org/polylabs/pass
+// Poly Pass Encryption — Per-credential PQ encryption & vault key management (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass/encrypt
+//   AES-256-GCM per-credential encryption, ML-KEM-1024 vault key wrapping.
+//   Vault keys derived from SPARK biometric master seed via HKDF("poly-pass-v1").
+//   Key rotation re-wraps every credential under a new vault epoch.
 
 import polykit_identity
 import polykit_metering
 
-// ── Types ───────────────────────────────────────────────────────
+// ── Aliases ─────────────────────────────────────────────────────
 
 type VaultKey = bytes(32)
 type CredentialKey = bytes(32)
 type Nonce = bytes(12)
 type Ciphertext = bytes
 
-type EncryptedCredential = struct {
+// ── Data Declarations (Stratum + Cortex) ────────────────────────
+
+data EncryptedCredential : pass v1 {
     credential_id: bytes(16),
     nonce: Nonce,
     ciphertext: Ciphertext,
     aad: bytes(64),
     tag: bytes(16),
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/encrypt
+    cortex {
+        redact [ciphertext, tag]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
 
-type WrappedVaultKey = struct {
+data WrappedVaultKey : pass v1 {
     kem_ciphertext: bytes(1568),
     wrapped_key: bytes(48),
     nonce: Nonce,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/encrypt
+    cortex {
+        redact [wrapped_key]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
 
-type VaultKeyRotation = struct {
+data VaultKeyRotation : pass v1 {
     old_key_hash: bytes(32),
     new_key_hash: bytes(32),
     rewrapped_count: u32,
     rotated_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/encrypt
+    cortex {
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
 
 // ── Streams ─────────────────────────────────────────────────────
 
@@ -54,48 +80,16 @@ circuit encrypt_credential(
 ) -> EncryptedCredential
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/encrypt
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [encrypt_ops, encrypt_latency_ns, bytes_encrypted]
     monitor "encrypt_throughput" { encrypt_ops < 500/s }
     invariant "key_nonzero" { vault_key != zero(32) }
     invariant "plaintext_bounded" { len(plaintext) > 0 and len(plaintext) <= 65536 }
     invariant "valid_classification" { classification <= 2 }
+    property safety "no_plaintext_leak" { output contains no plaintext bits }
     meters [compute_cycles, memory_bytes]
     wasm_abi [csprng, now]
-    test golden "encrypt_basic_credential" {
-        let vk = bytes(32, 0xAA)
-        let cid = bytes(16, 0x01)
-        let pt = "password123"
-        let enc = encrypt_credential(vk, cid, pt, 0, bytes(16, 0x02))
-        assert len(enc.ciphertext) > 0
-        assert enc.credential_id == cid
-        assert enc.nonce != zero(12)
-    }
-    kat_vector "aes_gcm_encrypt_credential" {
-        key: bytes(32, 0xAA)
-        nonce: bytes(12, 0xBB)
-        plaintext: bytes(64, 0xCC)
-        aad: bytes(64, 0xDD)
-        function: aes_gcm_encrypt
-    }
-    kat_vector "hkdf_sha3_cred_key" {
-        ikm: bytes(32, 0xAA)
-        info: "cred-key:test"
-        length: 32
-        function: hkdf_sha3
-    }
-    fuzz_target "encrypt_credential_fuzz" {
-        fuzz vault_key: bytes(32, random)
-        fuzz credential_id: bytes(16, random)
-        fuzz plaintext: bytes(random, 1..65536)
-        fuzz classification: u8 { 0..2 }
-        fuzz user_id: bytes(16, random)
-        assert len(output.ciphertext) > 0
-        assert output.tag != zero(16)
-    }
 {
     let cred_key = hkdf_sha3(vault_key, concat("cred-key:", credential_id), 32)
     let nonce = csprng(12)
@@ -125,24 +119,15 @@ circuit decrypt_credential(
 ) -> bytes
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/encrypt
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [decrypt_ops, decrypt_latency_ns, decrypt_failures]
     monitor "decrypt_failure_rate" { decrypt_failures / decrypt_ops < 0.01 }
     invariant "key_nonzero" { vault_key != zero(32) }
     invariant "tag_present" { len(encrypted.tag) == 16 }
+    property safety "no_key_leak" { output contains no vault_key bits }
     meters [compute_cycles, memory_bytes]
     wasm_abi [now]
-    test golden "decrypt_roundtrip" {
-        let vk = bytes(32, 0xAA)
-        let cid = bytes(16, 0x01)
-        let uid = bytes(16, 0x02)
-        let enc = encrypt_credential(vk, cid, "secret", 0, uid)
-        let pt = decrypt_credential(vk, enc, uid)
-        assert pt == "secret"
-    }
 {
     let cred_key = hkdf_sha3(vault_key, concat("cred-key:", encrypted.credential_id), 32)
     let plaintext = aes_gcm_decrypt(cred_key, encrypted.nonce, encrypted.ciphertext, encrypted.aad, encrypted.tag)
@@ -161,24 +146,13 @@ circuit derive_vault_key(
 ) -> WrappedVaultKey
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/encrypt
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [vault_key_derivations]
     invariant "seed_nonzero" { master_seed != zero(32) }
+    property safety "no_seed_leak" { output contains no master_seed bits }
     meters [compute_cycles, memory_bytes]
     wasm_abi [csprng]
-    test golden "derive_vault_key_deterministic" {
-        let seed = bytes(32, 0xCC)
-        let wk = derive_vault_key(seed, 0)
-        assert len(wk.kem_ciphertext) == 1568
-        assert wk.nonce != zero(12)
-    }
-    kat_vector "mlkem_encaps_vault_key" {
-        pk: bytes(1568, 0xCC)
-        function: mlkem_encaps
-    }
 {
     let keys = polykit_identity::derive_keys(master_seed, "poly-pass-v1")
     let vault_key = hkdf_sha3(master_seed, concat("vault-key:epoch:", vault_epoch), 32)
@@ -205,14 +179,13 @@ circuit rotate_vault_key(
 ) -> VaultKeyRotation
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/encrypt
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [key_rotations, credentials_rewrapped, rotation_latency_ns]
     monitor "rotation_size" { credentials_rewrapped < 10000 }
     invariant "keys_differ" { old_vault_key != hkdf_sha3(new_master_seed, concat("vault-key:epoch:", new_epoch), 32) }
     invariant "count_match" { len(credential_ids) == len(encrypted_credentials) }
+    property safety "no_key_leak" { output contains no old_vault_key bits }
     meters [compute_cycles, memory_bytes]
     wasm_abi [csprng, now]
 {
@@ -243,4 +216,68 @@ circuit rotate_vault_key(
     })
 
     rotation
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "encrypt_basic_credential" {
+    let vk = bytes(32, 0xAA)
+    let cid = bytes(16, 0x01)
+    let pt = "password123"
+    let enc = encrypt_credential(vk, cid, pt, 0, bytes(16, 0x02))
+    assert len(enc.ciphertext) > 0
+    assert enc.credential_id == cid
+    assert enc.nonce != zero(12)
+}
+
+test golden "decrypt_roundtrip" {
+    let vk = bytes(32, 0xAA)
+    let cid = bytes(16, 0x01)
+    let uid = bytes(16, 0x02)
+    let enc = encrypt_credential(vk, cid, "secret", 0, uid)
+    let pt = decrypt_credential(vk, enc, uid)
+    assert pt == "secret"
+}
+
+test golden "derive_vault_key_deterministic" {
+    let seed = bytes(32, 0xCC)
+    let wk = derive_vault_key(seed, 0)
+    assert len(wk.kem_ciphertext) == 1568
+    assert wk.nonce != zero(12)
+}
+
+kat_vector "aes_gcm_encrypt_credential" {
+    key: bytes(32, 0xAA)
+    nonce: bytes(12, 0xBB)
+    plaintext: bytes(64, 0xCC)
+    aad: bytes(64, 0xDD)
+    function: aes_gcm_encrypt
+}
+
+kat_vector "hkdf_sha3_cred_key" {
+    ikm: bytes(32, 0xAA)
+    info: "cred-key:test"
+    length: 32
+    function: hkdf_sha3
+}
+
+kat_vector "mlkem_encaps_vault_key" {
+    pk: bytes(1568, 0xCC)
+    function: mlkem_encaps
+}
+
+fuzz_target "encrypt_credential_fuzz" {
+    inputs {
+        vault_key: bytes(32)
+        credential_id: bytes(16)
+        plaintext: bytes(1..65536)
+        classification: u8 { 0..2 }
+        user_id: bytes(16)
+    }
+    assert {
+        no_panic
+        constant_time true
+        len(output.ciphertext) > 0
+        output.tag != zero(16)
+    }
 }

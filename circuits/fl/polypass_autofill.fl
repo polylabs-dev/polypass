@@ -1,11 +1,15 @@
-/// Poly Pass Autofill — URL matching, form detection, and credential fill
-/// Fuzzy URL matching with domain equivalence and form field mapping
-/// govern lex esn/global/org/polylabs/pass
+// Poly Pass Autofill — URL matching, form detection, and credential fill (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass/autofill
+//   Fuzzy URL matching with domain equivalence and form field mapping.
+//   Scores: ExactDomain (1000), Equivalent (900), Subdomain (800), Fuzzy (500).
+//   DOM-based autofill via WASM browser extension bridge.
 
 import polykit_identity
 import polykit_metering
 
-// ── Types ───────────────────────────────────────────────────────
+// ── Value Types ─────────────────────────────────────────────────
 
 type UrlPattern = struct {
     scheme: string,
@@ -23,7 +27,9 @@ type FormField = struct {
     tab_index: u16,
 }
 
-type AutofillMatch = struct {
+// ── Data Declarations (Stratum + Cortex) ────────────────────────
+
+data AutofillMatch : pass v1 {
     credential_id: bytes(16),
     domain: string,
     username_hash: bytes(32),
@@ -32,14 +38,26 @@ type AutofillMatch = struct {
     has_totp: bool,
     has_passkey: bool,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/autofill
+    cortex {
+        obfuscate [username_hash]
+        infer on_write
+        on_anomaly alert "pass-team"
+    }
 
-type AutofillResult = struct {
+data AutofillResult : pass v1 {
     fields_filled: u8,
     credential_id: bytes(16),
     fill_latency_ns: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/autofill
+    cortex {
+        infer on_write
+    }
 
-type SaveCandidate = struct {
+data SaveCandidate : pass v1 {
     url: string,
     username: string,
     password_encrypted: bytes,
@@ -47,6 +65,13 @@ type SaveCandidate = struct {
     is_update: bool,
     existing_credential_id: option<bytes(16)>,
 }
+    store kv
+    govern lex esn/global/org/polylabs/pass/autofill
+    cortex {
+        redact [password_encrypted]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
 
 // ── Enums ───────────────────────────────────────────────────────
 
@@ -85,26 +110,12 @@ circuit match_url(
 ) -> list<AutofillMatch>
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/autofill
-    status production
     precision B
-    povc true
     observe metrics: [url_matches, match_latency_ns, fuzzy_match_count]
     monitor "match_latency" { match_latency_ns < 5000000 }
     invariant "parallel_lengths" { len(patterns) == len(credential_ids) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [now]
-    test golden "exact_domain_match" {
-        let pat = UrlPattern { scheme: "https", domain: "github.com", path_prefix: "/", port: 443, equivalent_domains: [] }
-        let matches = match_url("https://github.com/login", [pat], [bytes(16, 0x01)], [bytes(32, 0xAA)], [false], [false])
-        assert len(matches) == 1
-        assert matches[0].match_reason == 0
-    }
-    test golden "equivalent_domain_match" {
-        let pat = UrlPattern { scheme: "https", domain: "google.com", path_prefix: "/", port: 443, equivalent_domains: ["accounts.google.com", "mail.google.com"] }
-        let matches = match_url("https://accounts.google.com/login", [pat], [bytes(16, 0x01)], [bytes(32, 0xAA)], [true], [false])
-        assert len(matches) == 1
-        assert matches[0].match_reason == 1
-    }
 {
     let parsed_domain = parse_domain(url)
     let parsed_path = parse_path(url)
@@ -112,25 +123,25 @@ circuit match_url(
 
     parallel for i in 0..len(patterns) {
         let score = 0
-        let reason = 4  // FuzzyMatch default
+        let reason = 4
 
         if parsed_domain == patterns[i].domain {
             score = 1000
-            reason = 0  // ExactDomain
+            reason = 0
         } else if contains(patterns[i].equivalent_domains, parsed_domain) {
             score = 900
-            reason = 1  // EquivalentDomain
+            reason = 1
         } else if ends_with(parsed_domain, concat(".", patterns[i].domain)) {
             score = 800
-            reason = 2  // SubdomainMatch
+            reason = 2
         } else if levenshtein(parsed_domain, patterns[i].domain) <= 2 {
             score = 500
-            reason = 4  // FuzzyMatch
+            reason = 4
         }
 
         if score > 0 and starts_with(parsed_path, patterns[i].path_prefix) {
             score = score + 50
-            if reason > 3 { reason = 3 }  // PathMatch bonus
+            if reason > 3 { reason = 3 }
         }
 
         if score > 0 {
@@ -157,25 +168,12 @@ circuit autofill_form(
 ) -> AutofillResult
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/autofill
-    status production
     precision B
-    povc true
     observe metrics: [autofill_ops, fields_filled, autofill_latency_ns]
     monitor "autofill_latency" { autofill_latency_ns < 10000000 }
     invariant "fields_present" { len(fields) > 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [now, dom_fill]
-    test golden "autofill_form_basic" {
-        let fields = [FormField {
-            field_name: "username", field_type: 0,
-            autocomplete_hint: "username", selector: "#user", tab_index: 1,
-        }, FormField {
-            field_name: "password", field_type: 2,
-            autocomplete_hint: "current-password", selector: "#pass", tab_index: 2,
-        }]
-        let result = autofill_form(fields, bytes(64, 0xAA), bytes(128, 0xBB), none)
-        assert result.fields_filled == 2
-    }
 {
     let start = now_ns()
     let filled = 0
@@ -213,16 +211,13 @@ circuit suggest_credentials(
 ) -> list<AutofillMatch>
     profile poly_framework_standard
     lex esn/global/org/polylabs/pass/autofill
-    status production
     precision B
-    povc true
     observe metrics: [suggest_ops, suggestions_returned]
     meters [compute_cycles, memory_bytes]
     wasm_abi [now]
 {
     let matches = match_url(url, vault_patterns, credential_ids, username_hashes, totp_flags, passkey_flags)
 
-    // Re-rank by recency for ties in match_score
     for i in 0..len(matches) {
         let idx = index_of(credential_ids, matches[i].credential_id)
         if last_used_ns[idx] > now_ns() - 604800000000000 {
@@ -241,9 +236,7 @@ circuit save_from_form(
 ) -> bytes(16)
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass/autofill
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [save_ops, save_update_ops, save_new_ops]
     invariant "url_present" { len(candidate.url) > 0 }
@@ -269,4 +262,32 @@ circuit save_from_form(
     })
 
     credential_id
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "exact_domain_match" {
+    let pat = UrlPattern { scheme: "https", domain: "github.com", path_prefix: "/", port: 443, equivalent_domains: [] }
+    let matches = match_url("https://github.com/login", [pat], [bytes(16, 0x01)], [bytes(32, 0xAA)], [false], [false])
+    assert len(matches) == 1
+    assert matches[0].match_reason == 0
+}
+
+test golden "equivalent_domain_match" {
+    let pat = UrlPattern { scheme: "https", domain: "google.com", path_prefix: "/", port: 443, equivalent_domains: ["accounts.google.com", "mail.google.com"] }
+    let matches = match_url("https://accounts.google.com/login", [pat], [bytes(16, 0x01)], [bytes(32, 0xAA)], [true], [false])
+    assert len(matches) == 1
+    assert matches[0].match_reason == 1
+}
+
+test golden "autofill_form_basic" {
+    let fields = [FormField {
+        field_name: "username", field_type: 0,
+        autocomplete_hint: "username", selector: "#user", tab_index: 1,
+    }, FormField {
+        field_name: "password", field_type: 2,
+        autocomplete_hint: "current-password", selector: "#pass", tab_index: 2,
+    }]
+    let result = autofill_form(fields, bytes(64, 0xAA), bytes(128, 0xBB), none)
+    assert result.fields_filled == 2
 }

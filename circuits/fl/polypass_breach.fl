@@ -1,0 +1,276 @@
+// Poly Pass Breach Monitoring — Compare hashes against known breaches (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass/breach
+//   k-anonymity breach checking (HaveIBeenPwned-style): only a SHA-1 prefix
+//   leaves the device; the server returns all suffix matches. Passwords are
+//   NEVER sent — only derived hashes. All comparisons are constant-time.
+//
+// Wire opcodes:
+//   0xC0 BREACH_CHECK   — check a single credential hash
+//   0xC1 BREACH_BATCH   — check multiple credentials in one pass
+//   0xC2 BREACH_MONITOR — subscribe to ongoing monitoring
+
+import polykit_identity
+import polykit_metering
+
+// ── Data Declarations (Stratum + Cortex) ────────────────────────
+
+data BreachResult : pass v1 {
+    credential_id: bytes(16),
+    is_breached: bool,
+    breach_count: u32,
+    breach_sources: list<string>,
+    checked_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/pass/breach
+    cortex {
+        obfuscate [credential_id]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+data BreachBatchResult : pass v1 {
+    user_id: bytes(16),
+    total_checked: u32,
+    breached_count: u32,
+    results: list<BreachResult>,
+    batch_duration_ms: u64,
+    checked_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/pass/breach
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "pass-security"
+    }
+
+data BreachMonitorSubscription : pass v1 {
+    user_id: bytes(16),
+    credential_ids: list<bytes(16)>,
+    check_interval_hours: u32,
+    last_checked_at: u64,
+    active: bool,
+}
+    store kv
+    govern lex esn/global/org/polylabs/pass/breach
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream breach_alerts: event<BreachResult>
+    retention 7y
+    consumers [streamsight, console, governance]
+
+stream breach_batch_events: event<BreachBatchResult>
+    retention 365d
+    consumers [streamsight, console]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit check_breach(
+    credential_id: bytes(16),
+    password_hash: bytes(32),
+    user_id: bytes(16),
+) -> BreachResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/breach
+    precision C
+    constant_time true
+    observe metrics: [breach_checks, breaches_found, breach_check_latency_ns]
+    monitor "breach_check_rate" { breach_checks < 100/s }
+    invariant "hash_nonzero" { password_hash != zero(32) }
+    invariant "k_anonymity_prefix" { len(bit_slice(sha1(password_hash), 0, 40)) >= 5 }
+    property safety "no_password_leak" { output contains no password_hash bits beyond prefix }
+    meters [compute_cycles, memory_bytes, bandwidth]
+    wasm_abi [now, http_fetch]
+{
+    let sha1_hash = sha1(password_hash)
+    let prefix = hex_encode(bit_slice(sha1_hash, 0, 40))
+    let suffix = hex_encode(bit_slice(sha1_hash, 40, 160))
+
+    let range_response = http_fetch(concat("https://api.pwnedpasswords.com/range/", prefix))
+    let matches = parse_hibp_response(range_response)
+
+    let is_breached = false
+    let breach_count = 0
+    let sources = []
+
+    for entry in matches {
+        if constant_time_eq(entry.suffix, suffix) {
+            is_breached = true
+            breach_count = entry.count
+            sources = entry.sources
+        }
+    }
+
+    let result = BreachResult {
+        credential_id: credential_id,
+        is_breached: is_breached,
+        breach_count: breach_count,
+        breach_sources: sources,
+        checked_at: now_ns() / 1000000,
+    }
+
+    if is_breached {
+        emit(breach_alerts, result)
+    }
+
+    polykit_metering::record_usage(user_id, "pass_breach_check", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: len(range_response),
+        storage: 0, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
+    })
+
+    result
+}
+
+circuit check_breach_batch(
+    credential_ids: list<bytes(16)>,
+    password_hashes: list<bytes(32)>,
+    user_id: bytes(16),
+) -> BreachBatchResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/breach
+    precision C
+    constant_time true
+    observe metrics: [breach_batch_checks, breach_batch_size, batch_breaches_found]
+    monitor "batch_size" { breach_batch_size < 1000 }
+    invariant "lengths_match" { len(credential_ids) == len(password_hashes) }
+    invariant "batch_nonempty" { len(credential_ids) > 0 }
+    property safety "no_password_leak" { output contains no password_hashes bits beyond prefix }
+    meters [compute_cycles, memory_bytes, bandwidth]
+    wasm_abi [now, http_fetch]
+{
+    let start = now_ns() / 1000000
+    let results = []
+    let breached_count = 0
+
+    parallel for i in 0..len(credential_ids) {
+        let result = check_breach(credential_ids[i], password_hashes[i], user_id)
+        results = append(results, result)
+        if result.is_breached {
+            breached_count = breached_count + 1
+        }
+    }
+
+    let elapsed = (now_ns() / 1000000) - start
+
+    BreachBatchResult {
+        user_id: user_id,
+        total_checked: len(credential_ids),
+        breached_count: breached_count,
+        results: results,
+        batch_duration_ms: elapsed,
+        checked_at: now_ns() / 1000000,
+    }
+}
+
+circuit subscribe_breach_monitor(
+    user_id: bytes(16),
+    credential_ids: list<bytes(16)>,
+    check_interval_hours: u32,
+) -> BreachMonitorSubscription
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/pass/breach
+    precision B
+    observe metrics: [monitor_subscriptions, monitored_credentials]
+    invariant "valid_interval" { check_interval_hours >= 1 and check_interval_hours <= 168 }
+    invariant "credentials_present" { len(credential_ids) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let sub = BreachMonitorSubscription {
+        user_id: user_id,
+        credential_ids: credential_ids,
+        check_interval_hours: check_interval_hours,
+        last_checked_at: now_ns() / 1000000,
+        active: true,
+    }
+
+    eslite_insert("breach_monitor_subs", user_id, sub)
+    sub
+}
+
+circuit run_scheduled_check(
+    subscription: BreachMonitorSubscription,
+    password_hashes: list<bytes(32)>,
+) -> option<BreachBatchResult>
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/pass/breach
+    precision C
+    constant_time true
+    observe metrics: [scheduled_checks, scheduled_breaches_found]
+    invariant "subscription_active" { subscription.active }
+    invariant "hashes_match" { len(subscription.credential_ids) == len(password_hashes) }
+    property safety "no_password_leak" { output contains no password_hashes bits beyond prefix }
+    meters [compute_cycles, memory_bytes, bandwidth]
+    wasm_abi [now, http_fetch, eslite_insert]
+{
+    let now_ms = now_ns() / 1000000
+    let interval_ms = subscription.check_interval_hours * 3600000
+    if now_ms - subscription.last_checked_at < interval_ms {
+        return none
+    }
+
+    let batch = check_breach_batch(subscription.credential_ids, password_hashes, subscription.user_id)
+
+    let updated = BreachMonitorSubscription {
+        user_id: subscription.user_id,
+        credential_ids: subscription.credential_ids,
+        check_interval_hours: subscription.check_interval_hours,
+        last_checked_at: now_ms,
+        active: subscription.active,
+    }
+    eslite_insert("breach_monitor_subs", subscription.user_id, updated)
+
+    some(batch)
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "clean_credential" {
+    let result = check_breach(bytes(16, 0x01), bytes(32, 0xFF), bytes(16, 0x02))
+    assert result.credential_id == bytes(16, 0x01)
+}
+
+test golden "batch_check" {
+    let ids = [bytes(16, 0x01), bytes(16, 0x02)]
+    let hashes = [bytes(32, 0xAA), bytes(32, 0xBB)]
+    let result = check_breach_batch(ids, hashes, bytes(16, 0x03))
+    assert result.total_checked == 2
+}
+
+fuzz_target "breach_check_fuzz" {
+    inputs {
+        credential_id: bytes(16)
+        password_hash: bytes(32)
+        user_id: bytes(16)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
+
+fuzz_target "breach_batch_fuzz" {
+    inputs {
+        credential_ids: list<bytes(16)>(1..100)
+        password_hashes: list<bytes(32)>(1..100)
+        user_id: bytes(16)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
+
+property safety "no_password_leak" {
+    forall check_breach(cid, ph, uid):
+        output.breach_sources does_not_contain ph
+        and output does_not_contain ph
+}

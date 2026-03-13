@@ -1,7 +1,9 @@
-/// Poly Pass Vault Graph — Stratum graph storage + Cortex AI governance
-/// Credential vault modeled as typed graph with overlays for breach status,
-/// password age, strength score, autofill frequency, and usage recency
-/// govern lex esn/global/org/polylabs/pass
+// Poly Pass Vault Graph — Stratum graph storage + Cortex AI governance (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/pass
+//   Credential vault modeled as typed graph with overlays for breach status,
+//   password age, strength score, autofill frequency, and usage recency.
 
 import polykit_identity
 import polykit_metering
@@ -25,7 +27,7 @@ type CredentialState = enum {
 
 // ── Data: Node types (Stratum store graph + Cortex) ─────────────
 
-data CredentialNode : app v1 {
+data CredentialNode : pass v1 {
     credential_id: string,
     user_id: string,
     url_domain: string,
@@ -48,7 +50,7 @@ data CredentialNode : app v1 {
         on_anomaly alert "pass-security"
     }
 
-data FolderNode : app v1 {
+data FolderNode : pass v1 {
     folder_id: string,
     user_id: string,
     name: string,
@@ -65,7 +67,7 @@ data FolderNode : app v1 {
         infer on_write
     }
 
-data TagNode : app v1 {
+data TagNode : pass v1 {
     tag_id: string,
     user_id: string,
     name: string,
@@ -171,10 +173,9 @@ circuit create_credential(
     strength: u8,
     signing_sk: bytes(4896),
 ) -> CredentialNode
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [credentials_created, credential_create_latency_ns]
     monitor "credential_creation_rate" { credentials_created < 100/s }
@@ -183,14 +184,6 @@ circuit create_credential(
     invariant "password_present" { len(password_encrypted) > 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now, csprng]
-    test golden "create_basic_credential" {
-        let pk = bytes(2592, 0xAA)
-        let sk = bytes(4896, 0xBB)
-        let cred = create_credential(pk, "github.com", "hash123", "enc_pw", "", "", "", 0, 80, sk)
-        assert len(cred.credential_id) > 0
-        assert cred.state == 0
-        assert cred.url_domain == "github.com"
-    }
 {
     let user_id = polykit_identity::derive_user_id(user_pk)
     let ts = now_ns() / 1000000
@@ -207,7 +200,7 @@ circuit create_credential(
         totp_seed: totp_seed,
         passkey_credential_id: passkey_credential_id,
         classification: classification,
-        state: 0,  // ACTIVE
+        state: 0,
         created_at: ts,
         updated_at: ts,
     }
@@ -239,10 +232,9 @@ circuit update_credential(
     new_strength: option<u8>,
     signing_sk: bytes(4896),
 ) -> CredentialNode
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     constant_time true
     observe metrics: [credentials_updated, credential_update_latency_ns]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
@@ -298,10 +290,9 @@ circuit delete_credential(
     user_id: string,
     signing_sk: bytes(4896),
 ) -> bool
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     observe metrics: [credentials_deleted]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
     meters [compute_cycles, memory_bytes]
@@ -310,7 +301,6 @@ circuit delete_credential(
     let ts = now_ns() / 1000000
     let _sig = mldsa_sign(signing_sk, concat(credential_id, "delete", ts))
 
-    // Transition state machine to DELETED
     state_transition(credential_lifecycle, credential_id, user_deleted)
 
     let existing = graph_query(vault_registry, credential_id)
@@ -324,7 +314,7 @@ circuit delete_credential(
         totp_seed: "",
         passkey_credential_id: "",
         classification: existing.classification,
-        state: 4,  // DELETED
+        state: 4,
         created_at: existing.created_at,
         updated_at: ts,
     }
@@ -340,10 +330,9 @@ circuit create_folder(
     icon: u16,
     signing_sk: bytes(4896),
 ) -> FolderNode
+    profile poly_framework_standard
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     observe metrics: [folders_created]
     invariant "name_present" { len(name) > 0 }
     meters [compute_cycles, memory_bytes]
@@ -386,10 +375,9 @@ circuit move_credential(
     user_id: string,
     signing_sk: bytes(4896),
 ) -> bool
+    profile poly_framework_standard
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     observe metrics: [credentials_moved]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
     invariant "dest_exists" { graph_exists(vault_registry, to_folder_id) }
@@ -420,10 +408,9 @@ circuit record_autofill(
     credential_id: string,
     user_id: string,
 ) -> bool
+    profile poly_framework_standard
     lex esn/global/org/polylabs/pass
-    status production
     precision B
-    povc true
     observe metrics: [autofill_records]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
     wasm_abi [now]
@@ -439,10 +426,9 @@ circuit update_breach_status(
     is_breached: bool,
     user_id: string,
 ) -> bool
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     observe metrics: [breach_status_updates, breaches_flagged]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
     wasm_abi [now]
@@ -464,8 +450,8 @@ circuit get_credential(
     graph_id: bytes(32),
     credential_id: string,
 ) -> option<CredentialNode>
+    profile poly_framework_standard
     lex esn/global/org/polylabs/pass
-    status production
     precision B
     observe metrics: [credential_queries]
 {
@@ -476,14 +462,10 @@ circuit get_credentials_for_user(
     graph_id: bytes(32),
     user_id: string,
 ) -> list<CredentialNode>
+    profile poly_framework_standard
     lex esn/global/org/polylabs/pass
-    status production
     precision B
     observe metrics: [user_credential_queries, credentials_returned]
-    test golden "empty_vault_returns_empty" {
-        let creds = get_credentials_for_user(bytes(32, 0x01), "NONEXIST")
-        assert creds == []
-    }
 {
     graph_query_by_field(vault_registry, CredentialNode, user_id, user_id)
 }
@@ -492,24 +474,21 @@ circuit get_folders_for_user(
     graph_id: bytes(32),
     user_id: string,
 ) -> list<FolderNode>
+    profile poly_framework_standard
     lex esn/global/org/polylabs/pass
-    status production
     precision B
     observe metrics: [folder_queries]
 {
     graph_query_by_field(vault_registry, FolderNode, user_id, user_id)
 }
 
-// ── Circuits: Quantum State Snapshot ────────────────────────────
-
 circuit snapshot_vault_state(
     user_id: string,
     signing_sk: bytes(4896),
 ) -> string
+    profile poly_framework_sensitive
     lex esn/global/org/polylabs/pass
-    status production
     precision C
-    povc true
     observe metrics: [vault_snapshots, snapshot_size_bytes]
 {
     let credentials = graph_query_by_field(vault_registry, CredentialNode, user_id, user_id)
@@ -553,3 +532,19 @@ stream vault_graph_mutations: event<CredentialNode>
 stream credential_state_events: event<CredentialNode>
     retention 365d
     consumers [streamsight, console, pass_security]
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "create_basic_credential" {
+    let pk = bytes(2592, 0xAA)
+    let sk = bytes(4896, 0xBB)
+    let cred = create_credential(pk, "github.com", "hash123", "enc_pw", "", "", "", 0, 80, sk)
+    assert len(cred.credential_id) > 0
+    assert cred.state == 0
+    assert cred.url_domain == "github.com"
+}
+
+test golden "empty_vault_returns_empty" {
+    let creds = get_credentials_for_user(bytes(32, 0x01), "NONEXIST")
+    assert creds == []
+}
