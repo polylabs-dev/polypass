@@ -1,4 +1,4 @@
-// Poly Pass Metering — Per-product 8D metering for Poly Pass operations (v0.11.0)
+// Poly Pass Metering — Per-product 8D metering for Poly Pass operations (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/pass/metering
@@ -45,7 +45,7 @@ data PassTierLimits : pass v1 {
     base_limits: polykit_metering::TierLimits,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/metering
+    govern lex global/org/polylabs/pass/metering
     cortex {
         infer on_read
     }
@@ -61,7 +61,7 @@ data PassUsageSummary : pass v1 {
     period_start: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/metering
+    govern lex global/org/polylabs/pass/metering
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -73,7 +73,7 @@ data PassUsageSummary : pass v1 {
 stream pass_metering_events: event<polykit_metering::MeteringRecord>
     | throttle 500/s burst 1000
     retention 365d
-    consumers [streamsight, billing, governance]
+    consumers [observe, billing, governance]
 
 // ── Circuits ────────────────────────────────────────────────────
 
@@ -82,9 +82,9 @@ circuit meter_store(
     credential_bytes: u64,
 ) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/metering
-    precision B
-    observe metrics: [store_metering_ops]
+    lex global/org/polylabs/pass/metering
+    @precision B
+    @observe metrics: [store_metering_ops]
     monitor "store_metering_rate" { store_metering_ops < 5000/s }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
@@ -106,9 +106,9 @@ circuit meter_autofill(
     user_id: bytes(16),
 ) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/metering
-    precision B
-    observe metrics: [autofill_metering_ops]
+    lex global/org/polylabs/pass/metering
+    @precision B
+    @observe metrics: [autofill_metering_ops]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
@@ -130,9 +130,9 @@ circuit meter_share(
     wrapped_key_bytes: u64,
 ) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/metering
-    precision B
-    observe metrics: [share_metering_ops]
+    lex global/org/polylabs/pass/metering
+    @precision B
+    @observe metrics: [share_metering_ops]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
@@ -154,9 +154,9 @@ circuit meter_breach_check(
     response_bytes: u64,
 ) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/metering
-    precision B
-    observe metrics: [breach_metering_ops]
+    lex global/org/polylabs/pass/metering
+    @precision B
+    @observe metrics: [breach_metering_ops]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
@@ -180,9 +180,9 @@ circuit check_pass_tier_limits(
     current_usage: PassUsageSummary,
 ) -> list<string>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/metering
-    precision B
-    observe metrics: [tier_checks, tier_violations]
+    lex global/org/polylabs/pass/metering
+    @precision B
+    @observe metrics: [tier_checks, tier_violations]
     meters [compute_cycles, memory_bytes]
 {
     let violations = []
@@ -217,9 +217,9 @@ circuit get_pass_usage(
     user_id: bytes(16),
 ) -> PassUsageSummary
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/metering
-    precision B
-    observe metrics: [usage_queries]
+    lex global/org/polylabs/pass/metering
+    @precision B
+    @observe metrics: [usage_queries]
     wasm_abi [eslite_query, now]
 {
     let base = polykit_metering::get_usage_summary(user_id)

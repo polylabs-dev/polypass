@@ -1,4 +1,4 @@
-// Poly Pass Vault Graph — Stratum graph storage + Cortex AI governance (v0.11.0)
+// Poly Pass Vault Graph — Stratum graph storage + Cortex AI governance (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/pass
@@ -42,7 +42,7 @@ data CredentialNode : pass v1 {
     updated_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/pass
+    govern lex global/org/polylabs/pass
     cortex {
         redact [password_encrypted, notes_encrypted, totp_seed]
         obfuscate [user_id, url_domain]
@@ -61,7 +61,7 @@ data FolderNode : pass v1 {
     updated_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/pass
+    govern lex global/org/polylabs/pass
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -75,7 +75,7 @@ data TagNode : pass v1 {
     created_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/pass
+    govern lex global/org/polylabs/pass
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -148,7 +148,7 @@ graph vault_registry {
 
     ai_feed breach_alerting
 
-    observe vault_registry: [breach_status, strength_score, password_age_days] threshold: {
+    @observe vault_registry: [breach_status, strength_score, password_age_days] threshold: {
         anomaly_score 0.85
         baseline_window 120
     }
@@ -174,10 +174,10 @@ circuit create_credential(
     signing_sk: bytes(4896),
 ) -> CredentialNode
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
+    lex global/org/polylabs/pass
+    @precision C
     constant_time true
-    observe metrics: [credentials_created, credential_create_latency_ns]
+    @observe metrics: [credentials_created, credential_create_latency_ns]
     monitor "credential_creation_rate" { credentials_created < 100/s }
     invariant "valid_classification" { classification <= 2 }
     invariant "domain_present" { len(url_domain) > 0 }
@@ -233,10 +233,10 @@ circuit update_credential(
     signing_sk: bytes(4896),
 ) -> CredentialNode
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
+    lex global/org/polylabs/pass
+    @precision C
     constant_time true
-    observe metrics: [credentials_updated, credential_update_latency_ns]
+    @observe metrics: [credentials_updated, credential_update_latency_ns]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
@@ -291,9 +291,9 @@ circuit delete_credential(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
-    observe metrics: [credentials_deleted]
+    lex global/org/polylabs/pass
+    @precision C
+    @observe metrics: [credentials_deleted]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_delete, now]
@@ -331,9 +331,9 @@ circuit create_folder(
     signing_sk: bytes(4896),
 ) -> FolderNode
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass
-    precision C
-    observe metrics: [folders_created]
+    lex global/org/polylabs/pass
+    @precision C
+    @observe metrics: [folders_created]
     invariant "name_present" { len(name) > 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now, csprng]
@@ -376,9 +376,9 @@ circuit move_credential(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass
-    precision C
-    observe metrics: [credentials_moved]
+    lex global/org/polylabs/pass
+    @precision C
+    @observe metrics: [credentials_moved]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
     invariant "dest_exists" { graph_exists(vault_registry, to_folder_id) }
     meters [compute_cycles, memory_bytes]
@@ -409,9 +409,9 @@ circuit record_autofill(
     user_id: string,
 ) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass
-    precision B
-    observe metrics: [autofill_records]
+    lex global/org/polylabs/pass
+    @precision B
+    @observe metrics: [autofill_records]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
     wasm_abi [now]
 {
@@ -427,9 +427,9 @@ circuit update_breach_status(
     user_id: string,
 ) -> bool
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
-    observe metrics: [breach_status_updates, breaches_flagged]
+    lex global/org/polylabs/pass
+    @precision C
+    @observe metrics: [breach_status_updates, breaches_flagged]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
     wasm_abi [now]
 {
@@ -451,9 +451,9 @@ circuit get_credential(
     credential_id: string,
 ) -> option<CredentialNode>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass
-    precision B
-    observe metrics: [credential_queries]
+    lex global/org/polylabs/pass
+    @precision B
+    @observe metrics: [credential_queries]
 {
     graph_query(vault_registry, credential_id)
 }
@@ -463,9 +463,9 @@ circuit get_credentials_for_user(
     user_id: string,
 ) -> list<CredentialNode>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass
-    precision B
-    observe metrics: [user_credential_queries, credentials_returned]
+    lex global/org/polylabs/pass
+    @precision B
+    @observe metrics: [user_credential_queries, credentials_returned]
 {
     graph_query_by_field(vault_registry, CredentialNode, user_id, user_id)
 }
@@ -475,9 +475,9 @@ circuit get_folders_for_user(
     user_id: string,
 ) -> list<FolderNode>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass
-    precision B
-    observe metrics: [folder_queries]
+    lex global/org/polylabs/pass
+    @precision B
+    @observe metrics: [folder_queries]
 {
     graph_query_by_field(vault_registry, FolderNode, user_id, user_id)
 }
@@ -487,9 +487,9 @@ circuit snapshot_vault_state(
     signing_sk: bytes(4896),
 ) -> string
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
-    observe metrics: [vault_snapshots, snapshot_size_bytes]
+    lex global/org/polylabs/pass
+    @precision C
+    @observe metrics: [vault_snapshots, snapshot_size_bytes]
 {
     let credentials = graph_query_by_field(vault_registry, CredentialNode, user_id, user_id)
     let folders = graph_query_by_field(vault_registry, FolderNode, user_id, user_id)
@@ -527,11 +527,11 @@ circuit snapshot_vault_state(
 
 stream vault_graph_mutations: event<CredentialNode>
     retention 7y
-    consumers [governance, audit, streamsight, pass_security]
+    consumers [governance, audit, observe, pass_security]
 
 stream credential_state_events: event<CredentialNode>
     retention 365d
-    consumers [streamsight, console, pass_security]
+    consumers [observe, console, pass_security]
 
 // ── Test / KAT / Fuzz annotations ──────────────────────────────
 

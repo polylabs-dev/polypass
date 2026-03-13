@@ -1,4 +1,4 @@
-// Poly Pass Audit — Password strength scoring, reuse detection, vault health (v0.11.0)
+// Poly Pass Audit — Password strength scoring, reuse detection, vault health (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/pass/audit
@@ -24,7 +24,7 @@ data StrengthScore : pass v1 {
     feedback: list<string>,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/audit
+    govern lex global/org/polylabs/pass/audit
     cortex {
         infer on_write
         on_anomaly alert "pass-security"
@@ -38,7 +38,7 @@ data ReuseReport : pass v1 {
     reuse_percentage: u8,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/audit
+    govern lex global/org/polylabs/pass/audit
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -59,7 +59,7 @@ data HealthReport : pass v1 {
     generated_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/audit
+    govern lex global/org/polylabs/pass/audit
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -76,7 +76,7 @@ type ReuseGroup = struct {
 
 stream health_reports: event<HealthReport>
     retention 365d
-    consumers [streamsight, console]
+    consumers [observe, console]
 
 // ── Circuits ────────────────────────────────────────────────────
 
@@ -85,9 +85,9 @@ circuit score_strength(
     password: bytes,
 ) -> StrengthScore
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/audit
-    precision B
-    observe metrics: [strength_scores, weak_passwords, strong_passwords]
+    lex global/org/polylabs/pass/audit
+    @precision B
+    @observe metrics: [strength_scores, weak_passwords, strong_passwords]
     invariant "password_present" { len(password) > 0 }
     meters [compute_cycles, memory_bytes]
 {
@@ -142,10 +142,10 @@ circuit detect_reuse(
     domains: list<string>,
 ) -> ReuseReport
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/audit
-    precision B
+    lex global/org/polylabs/pass/audit
+    @precision B
     constant_time true
-    observe metrics: [reuse_scans, reuse_groups_found, reuse_percentage]
+    @observe metrics: [reuse_scans, reuse_groups_found, reuse_percentage]
     invariant "lengths_match" { len(credential_ids) == len(password_hashes) and len(credential_ids) == len(domains) }
     meters [compute_cycles, memory_bytes]
 {
@@ -201,9 +201,9 @@ circuit generate_health_report(
     unused_threshold_days: u32,
 ) -> HealthReport
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/audit
-    precision B
-    observe metrics: [health_reports_generated, overall_scores]
+    lex global/org/polylabs/pass/audit
+    @precision B
+    @observe metrics: [health_reports_generated, overall_scores]
     invariant "consistent_lengths" {
         len(credential_ids) == len(breach_statuses)
         and len(credential_ids) == len(strength_scores)

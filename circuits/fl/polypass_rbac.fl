@@ -1,4 +1,4 @@
-// Poly Pass RBAC — Role-based access control graph for enterprise vaults (v0.11.0)
+// Poly Pass RBAC — Role-based access control graph for enterprise vaults (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/pass/rbac
@@ -53,7 +53,7 @@ data RoleNode : pass v1 {
     updated_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/pass/rbac
+    govern lex global/org/polylabs/pass/rbac
     cortex {
         infer on_write
         on_anomaly alert "pass-security"
@@ -71,7 +71,7 @@ data PrincipalNode : pass v1 {
     created_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/pass/rbac
+    govern lex global/org/polylabs/pass/rbac
     cortex {
         obfuscate [principal_id, email_hash]
         infer on_write
@@ -90,7 +90,7 @@ data OrgNode : pass v1 {
     created_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/pass/rbac
+    govern lex global/org/polylabs/pass/rbac
     cortex {
         infer on_write
         on_anomaly alert "pass-team"
@@ -108,7 +108,7 @@ data RbacAuditEntry : pass v1 {
     timestamp: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/rbac
+    govern lex global/org/polylabs/pass/rbac
     cortex {
         obfuscate [principal_id]
         infer on_write
@@ -174,7 +174,7 @@ graph rbac_graph {
 
     ai_feed rbac_anomaly
 
-    observe rbac_graph: [effective_mask, deny_count, auth_count] threshold: {
+    @observe rbac_graph: [effective_mask, deny_count, auth_count] threshold: {
         anomaly_score 0.90
         baseline_window 300
     }
@@ -189,11 +189,11 @@ series rbac_series: rbac_graph
 
 stream rbac_events: event<RbacAuditEntry>
     retention 7y
-    consumers [governance, audit, streamsight, pass_security]
+    consumers [governance, audit, observe, pass_security]
 
 stream rbac_grant_events: event<HasRoleEdge>
     retention 7y
-    consumers [governance, audit, streamsight]
+    consumers [governance, audit, observe]
 
 // ── Circuits: Role Management ───────────────────────────────────
 
@@ -209,9 +209,9 @@ circuit create_role(
     signing_sk: bytes(4896),
 ) -> RoleNode
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/rbac
-    precision C
-    observe metrics: [roles_created]
+    lex global/org/polylabs/pass/rbac
+    @precision C
+    @observe metrics: [roles_created]
     invariant "name_present" { len(name) > 0 }
     invariant "valid_mask" { permission_mask > 0 and permission_mask <= 0xFF }
     invariant "no_circular_inherit" { not contains(inherits_from, role_id) }
@@ -260,9 +260,9 @@ circuit assign_role(
     signing_sk: bytes(4896),
 ) -> HasRoleEdge
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/rbac
-    precision C
-    observe metrics: [role_assignments, role_assignment_latency_ns]
+    lex global/org/polylabs/pass/rbac
+    @precision C
+    @observe metrics: [role_assignments, role_assignment_latency_ns]
     invariant "role_exists" { graph_exists(rbac_graph, role_id) }
     invariant "principal_exists" { graph_exists(rbac_graph, principal_id) }
     invariant "valid_expiry" { expires_at == 0 or expires_at > now_ns() / 1000000 }
@@ -305,9 +305,9 @@ circuit revoke_role(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/rbac
-    precision C
-    observe metrics: [role_revocations]
+    lex global/org/polylabs/pass/rbac
+    @precision C
+    @observe metrics: [role_revocations]
     invariant "assignment_exists" { graph_edge_exists(rbac_graph, principal_id, role_id, HasRoleEdge) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [now]
@@ -354,10 +354,10 @@ circuit check_access(
     vault_scope: string,
 ) -> RbacDecision
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/rbac
-    precision C
+    lex global/org/polylabs/pass/rbac
+    @precision C
     constant_time true
-    observe metrics: [access_checks, access_allowed, access_denied, access_escalated]
+    @observe metrics: [access_checks, access_allowed, access_denied, access_escalated]
     monitor "deny_rate" { access_denied / access_checks < 0.3 }
     invariant "principal_exists" { graph_exists(rbac_graph, principal_id) }
     property safety "deny_default" { no_permission implies deny }
@@ -436,8 +436,8 @@ circuit resolve_effective_mask(
     role: RoleNode,
 ) -> u64
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/rbac
-    precision B
+    lex global/org/polylabs/pass/rbac
+    @precision B
 {
     let mask = role.permission_mask
 
@@ -453,9 +453,9 @@ circuit get_principal_roles(
     principal_id: string,
 ) -> list<RoleNode>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/rbac
-    precision B
-    observe metrics: [role_queries]
+    lex global/org/polylabs/pass/rbac
+    @precision B
+    @observe metrics: [role_queries]
 {
     let edges = graph_traverse(rbac_graph, principal_id, HasRoleEdge)
     let roles = []
@@ -475,9 +475,9 @@ circuit get_org_members(
     org_id: string,
 ) -> list<PrincipalNode>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/rbac
-    precision B
-    observe metrics: [org_member_queries]
+    lex global/org/polylabs/pass/rbac
+    @precision B
+    @observe metrics: [org_member_queries]
 {
     graph_traverse(rbac_graph, org_id, OrgMemberEdge)
 }
@@ -490,9 +490,9 @@ circuit create_default_roles(
     signing_sk: bytes(4896),
 ) -> list<RoleNode>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/rbac
-    precision C
-    observe metrics: [default_role_sets_created]
+    lex global/org/polylabs/pass/rbac
+    @precision C
+    @observe metrics: [default_role_sets_created]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now, csprng]
 {

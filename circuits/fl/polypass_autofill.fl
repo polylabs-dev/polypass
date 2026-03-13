@@ -1,4 +1,4 @@
-// Poly Pass Autofill — URL matching, form detection, and credential fill (v0.11.0)
+// Poly Pass Autofill — URL matching, form detection, and credential fill (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/pass/autofill
@@ -39,7 +39,7 @@ data AutofillMatch : pass v1 {
     has_passkey: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/autofill
+    govern lex global/org/polylabs/pass/autofill
     cortex {
         obfuscate [username_hash]
         infer on_write
@@ -52,7 +52,7 @@ data AutofillResult : pass v1 {
     fill_latency_ns: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/autofill
+    govern lex global/org/polylabs/pass/autofill
     cortex {
         infer on_write
     }
@@ -66,7 +66,7 @@ data SaveCandidate : pass v1 {
     existing_credential_id: option<bytes(16)>,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/autofill
+    govern lex global/org/polylabs/pass/autofill
     cortex {
         redact [password_encrypted]
         infer on_write
@@ -96,7 +96,7 @@ type FieldType = enum {
 
 stream autofill_events: event<AutofillResult>
     retention 90d
-    consumers [streamsight, console]
+    consumers [observe, console]
 
 // ── Circuits ────────────────────────────────────────────────────
 
@@ -109,9 +109,9 @@ circuit match_url(
     passkey_flags: list<bool>,
 ) -> list<AutofillMatch>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/autofill
-    precision B
-    observe metrics: [url_matches, match_latency_ns, fuzzy_match_count]
+    lex global/org/polylabs/pass/autofill
+    @precision B
+    @observe metrics: [url_matches, match_latency_ns, fuzzy_match_count]
     monitor "match_latency" { match_latency_ns < 5000000 }
     invariant "parallel_lengths" { len(patterns) == len(credential_ids) }
     meters [compute_cycles, memory_bytes]
@@ -167,9 +167,9 @@ circuit autofill_form(
     totp_code: option<string>,
 ) -> AutofillResult
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/autofill
-    precision B
-    observe metrics: [autofill_ops, fields_filled, autofill_latency_ns]
+    lex global/org/polylabs/pass/autofill
+    @precision B
+    @observe metrics: [autofill_ops, fields_filled, autofill_latency_ns]
     monitor "autofill_latency" { autofill_latency_ns < 10000000 }
     invariant "fields_present" { len(fields) > 0 }
     meters [compute_cycles, memory_bytes]
@@ -210,9 +210,9 @@ circuit suggest_credentials(
     passkey_flags: list<bool>,
 ) -> list<AutofillMatch>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/autofill
-    precision B
-    observe metrics: [suggest_ops, suggestions_returned]
+    lex global/org/polylabs/pass/autofill
+    @precision B
+    @observe metrics: [suggest_ops, suggestions_returned]
     meters [compute_cycles, memory_bytes]
     wasm_abi [now]
 {
@@ -235,10 +235,10 @@ circuit save_from_form(
     signing_sk: bytes(4896),
 ) -> bytes(16)
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/autofill
-    precision C
+    lex global/org/polylabs/pass/autofill
+    @precision C
     constant_time true
-    observe metrics: [save_ops, save_update_ops, save_new_ops]
+    @observe metrics: [save_ops, save_update_ops, save_new_ops]
     invariant "url_present" { len(candidate.url) > 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [csprng, now, eslite_insert]

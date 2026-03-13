@@ -1,4 +1,4 @@
-// Poly Pass Breach Monitoring — Compare hashes against known breaches (v0.11.0)
+// Poly Pass Breach Monitoring — Compare hashes against known breaches (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/pass/breach
@@ -24,7 +24,7 @@ data BreachResult : pass v1 {
     checked_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/breach
+    govern lex global/org/polylabs/pass/breach
     cortex {
         obfuscate [credential_id]
         infer on_write
@@ -40,7 +40,7 @@ data BreachBatchResult : pass v1 {
     checked_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/breach
+    govern lex global/org/polylabs/pass/breach
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -55,7 +55,7 @@ data BreachMonitorSubscription : pass v1 {
     active: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/breach
+    govern lex global/org/polylabs/pass/breach
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -65,11 +65,11 @@ data BreachMonitorSubscription : pass v1 {
 
 stream breach_alerts: event<BreachResult>
     retention 7y
-    consumers [streamsight, console, governance]
+    consumers [observe, console, governance]
 
 stream breach_batch_events: event<BreachBatchResult>
     retention 365d
-    consumers [streamsight, console]
+    consumers [observe, console]
 
 // ── Circuits ────────────────────────────────────────────────────
 
@@ -79,10 +79,10 @@ circuit check_breach(
     user_id: bytes(16),
 ) -> BreachResult
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/breach
-    precision C
+    lex global/org/polylabs/pass/breach
+    @precision C
     constant_time true
-    observe metrics: [breach_checks, breaches_found, breach_check_latency_ns]
+    @observe metrics: [breach_checks, breaches_found, breach_check_latency_ns]
     monitor "breach_check_rate" { breach_checks < 100/s }
     invariant "hash_nonzero" { password_hash != zero(32) }
     invariant "k_anonymity_prefix" { len(bit_slice(sha1(password_hash), 0, 40)) >= 5 }
@@ -135,10 +135,10 @@ circuit check_breach_batch(
     user_id: bytes(16),
 ) -> BreachBatchResult
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/breach
-    precision C
+    lex global/org/polylabs/pass/breach
+    @precision C
     constant_time true
-    observe metrics: [breach_batch_checks, breach_batch_size, batch_breaches_found]
+    @observe metrics: [breach_batch_checks, breach_batch_size, batch_breaches_found]
     monitor "batch_size" { breach_batch_size < 1000 }
     invariant "lengths_match" { len(credential_ids) == len(password_hashes) }
     invariant "batch_nonempty" { len(credential_ids) > 0 }
@@ -176,9 +176,9 @@ circuit subscribe_breach_monitor(
     check_interval_hours: u32,
 ) -> BreachMonitorSubscription
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass/breach
-    precision B
-    observe metrics: [monitor_subscriptions, monitored_credentials]
+    lex global/org/polylabs/pass/breach
+    @precision B
+    @observe metrics: [monitor_subscriptions, monitored_credentials]
     invariant "valid_interval" { check_interval_hours >= 1 and check_interval_hours <= 168 }
     invariant "credentials_present" { len(credential_ids) > 0 }
     meters [compute_cycles, memory_bytes]
@@ -201,10 +201,10 @@ circuit run_scheduled_check(
     password_hashes: list<bytes(32)>,
 ) -> option<BreachBatchResult>
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/breach
-    precision C
+    lex global/org/polylabs/pass/breach
+    @precision C
     constant_time true
-    observe metrics: [scheduled_checks, scheduled_breaches_found]
+    @observe metrics: [scheduled_checks, scheduled_breaches_found]
     invariant "subscription_active" { subscription.active }
     invariant "hashes_match" { len(subscription.credential_ids) == len(password_hashes) }
     property safety "no_password_leak" { output contains no password_hashes bits beyond prefix }

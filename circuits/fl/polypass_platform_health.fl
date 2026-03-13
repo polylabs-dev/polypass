@@ -1,4 +1,4 @@
-// Poly Pass Platform Health — Blind relay telemetry for vault operations (v0.11.0)
+// Poly Pass Platform Health — Blind relay telemetry for vault operations (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/pass
@@ -30,7 +30,7 @@ data PlatformMetrics : pass v1 {
     collected_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass
+    govern lex global/org/polylabs/pass
     cortex {
         obfuscate [blinded_pass_id]
         infer on_write
@@ -51,7 +51,7 @@ data PassHealthSnapshot : pass v1 {
     baseline_vaults: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass
+    govern lex global/org/polylabs/pass
     cortex {
         infer on_read
     }
@@ -66,12 +66,12 @@ type PassHealthStatus = enum {
 
 stream pass_health_events: event<PlatformMetrics>
     retention 365d
-    consumers [streamsight, audit_trail, governance]
+    consumers [observe, audit_trail, governance]
     classify blinded_pass_id: METADATA, cohort_size: METADATA
 
 stream pass_anomaly_events: event<PassHealthSnapshot>
     retention forever
-    consumers [streamsight, governance, alerting]
+    consumers [observe, governance, alerting]
 
 // ── Series ──────────────────────────────────────────────────────
 
@@ -95,17 +95,17 @@ circuit polypass_platform_health(
     sync_operations: u64,
 ) -> option<PlatformMetrics>
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass {
+    lex global/org/polylabs/pass {
         governance hierarchical
         audit_trail true
         sub_lex vault fan_in
     }
-    precision C
-    streamsight true
+    @precision C
+    @observe true
     constant_time true
-    esz_emit "verify/polypass_platform_health.esz"
+    @serialize "verify/polypass_platform_health.esz"
     li_feed full_escir true, optimized_ir true, optimization_metadata true
-    observe metrics: [health_snapshots_emitted, health_snapshots_rejected, pass_anomalies_detected]
+    @observe metrics: [health_snapshots_emitted, health_snapshots_rejected, pass_anomalies_detected]
     monitor "breach_check_rate" { breach_checks < 5000/hr }
     monitor "health_emission_rate" { health_snapshots_emitted < 60/hr }
     invariant "cohort_enforced" { active_user_count >= 50 }
@@ -186,12 +186,12 @@ circuit polypass_anomaly_check(
     autofill_events: u64,
 ) -> PassHealthStatus
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass {
+    lex global/org/polylabs/pass {
         sub_lex vault fan_in
     }
-    precision B
-    streamsight true
-    observe metrics: [anomaly_checks, anomaly_triggers, degraded_periods, critical_periods]
+    @precision B
+    @observe true
+    @observe metrics: [anomaly_checks, anomaly_triggers, degraded_periods, critical_periods]
     monitor "anomaly_trigger_rate" { anomaly_triggers < 100/hr }
     invariant "valid_window" { window_end_ms > window_start_ms }
     property safety "no_false_critical" { critical implies anomaly > 0.9 }

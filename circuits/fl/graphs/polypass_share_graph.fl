@@ -1,4 +1,4 @@
-// Poly Pass Share Graph — Stratum graph storage + Cortex AI governance (v0.11.0)
+// Poly Pass Share Graph — Stratum graph storage + Cortex AI governance (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/pass
@@ -37,7 +37,7 @@ data ShareUserNode : pass v1 {
     joined_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/pass
+    govern lex global/org/polylabs/pass
     cortex {
         redact [email]
         obfuscate [user_id]
@@ -59,7 +59,7 @@ data SharedVaultNode : pass v1 {
     updated_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/pass
+    govern lex global/org/polylabs/pass
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -75,7 +75,7 @@ data SharedCredentialNode : pass v1 {
     created_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/pass
+    govern lex global/org/polylabs/pass
     cortex {
         redact [wrapped_key]
         obfuscate [added_by]
@@ -162,7 +162,7 @@ graph share_network {
 
     ai_feed share_anomaly
 
-    observe share_network: [permission_level, access_count, trust_score] threshold: {
+    @observe share_network: [permission_level, access_count, trust_score] threshold: {
         anomaly_score 0.90
         baseline_window 300
     }
@@ -183,10 +183,10 @@ circuit register_share_user(
     signing_sk: bytes(4896),
 ) -> ShareUserNode
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
+    lex global/org/polylabs/pass
+    @precision C
     constant_time true
-    observe metrics: [share_users_registered]
+    @observe metrics: [share_users_registered]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
     monitor "share_user_registration_rate" { share_users_registered < 50/s }
@@ -220,9 +220,9 @@ circuit create_shared_vault(
     signing_sk: bytes(4896),
 ) -> SharedVaultNode
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
-    observe metrics: [shared_vaults_created, shared_vault_create_latency_ns]
+    lex global/org/polylabs/pass
+    @precision C
+    @observe metrics: [shared_vaults_created, shared_vault_create_latency_ns]
     invariant "name_present" { len(name) > 0 }
     invariant "max_members_valid" { max_members >= 2 and max_members <= 1000 }
     meters [compute_cycles, memory_bytes]
@@ -280,10 +280,10 @@ circuit invite_to_vault(
     signing_sk: bytes(4896),
 ) -> InvitationEdge
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
+    lex global/org/polylabs/pass
+    @precision C
     constant_time true
-    observe metrics: [vault_invitations_sent, invitation_latency_ns]
+    @observe metrics: [vault_invitations_sent, invitation_latency_ns]
     invariant "vault_exists" { graph_exists(share_network, vault_id) }
     invariant "valid_role" { role <= 3 }
     meters [compute_cycles, memory_bytes]
@@ -327,10 +327,10 @@ circuit accept_vault_invitation(
     signing_sk: bytes(4896),
 ) -> MemberOfEdge
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
+    lex global/org/polylabs/pass
+    @precision C
     constant_time true
-    observe metrics: [vault_invitations_accepted]
+    @observe metrics: [vault_invitations_accepted]
     invariant "vault_exists" { graph_exists(share_network, vault_id) }
     invariant "not_expired" { invitation.expires_at > now_ns() / 1000000 }
     meters [compute_cycles, memory_bytes]
@@ -376,9 +376,9 @@ circuit revoke_vault_member(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
-    observe metrics: [vault_members_revoked]
+    lex global/org/polylabs/pass
+    @precision C
+    @observe metrics: [vault_members_revoked]
     invariant "vault_exists" { graph_exists(share_network, vault_id) }
     invariant "not_self_revoke_owner" { member_id != revoker_id or graph_query(share_network, vault_id).owner_id != member_id }
     meters [compute_cycles, memory_bytes]
@@ -413,10 +413,10 @@ circuit share_credential_to_vault(
     signing_sk: bytes(4896),
 ) -> SharedCredentialNode
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
+    lex global/org/polylabs/pass
+    @precision C
     constant_time true
-    observe metrics: [credentials_shared_to_vault]
+    @observe metrics: [credentials_shared_to_vault]
     invariant "vault_exists" { graph_exists(share_network, vault_id) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
@@ -457,9 +457,9 @@ circuit get_vault_members(
     vault_id: string,
 ) -> list<ShareUserNode>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass
-    precision B
-    observe metrics: [vault_member_queries]
+    lex global/org/polylabs/pass
+    @precision B
+    @observe metrics: [vault_member_queries]
 {
     graph_traverse(share_network, vault_id, MemberOfEdge)
 }
@@ -469,9 +469,9 @@ circuit get_shared_credentials(
     vault_id: string,
 ) -> list<SharedCredentialNode>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass
-    precision B
-    observe metrics: [shared_credential_queries]
+    lex global/org/polylabs/pass
+    @precision B
+    @observe metrics: [shared_credential_queries]
 {
     graph_traverse(share_network, vault_id, CredentialAccessEdge)
 }
@@ -481,9 +481,9 @@ circuit get_user_vaults(
     user_id: string,
 ) -> list<SharedVaultNode>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/pass
-    precision B
-    observe metrics: [user_vault_queries]
+    lex global/org/polylabs/pass
+    @precision B
+    @observe metrics: [user_vault_queries]
 {
     graph_traverse(share_network, user_id, MemberOfEdge)
 }
@@ -493,9 +493,9 @@ circuit snapshot_share_state(
     signing_sk: bytes(4896),
 ) -> string
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass
-    precision C
-    observe metrics: [share_snapshots]
+    lex global/org/polylabs/pass
+    @precision C
+    @observe metrics: [share_snapshots]
 {
     let vaults = graph_traverse(share_network, user_id, MemberOfEdge)
 
@@ -525,15 +525,15 @@ circuit snapshot_share_state(
 
 stream share_graph_mutations: event<SharedVaultNode>
     retention 7y
-    consumers [governance, audit, streamsight, pass_security]
+    consumers [governance, audit, observe, pass_security]
 
 stream share_access_events: event<SharedCredentialNode>
     retention 365d
-    consumers [streamsight, console, pass_security]
+    consumers [observe, console, pass_security]
 
 stream vault_membership_events: event<MemberOfEdge>
     retention 365d
-    consumers [streamsight, console, governance]
+    consumers [observe, console, governance]
 
 // ── Test / KAT / Fuzz annotations ──────────────────────────────
 

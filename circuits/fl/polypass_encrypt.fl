@@ -1,4 +1,4 @@
-// Poly Pass Encryption — Per-credential PQ encryption & vault key management (v0.11.0)
+// Poly Pass Encryption — Per-credential PQ encryption & vault key management (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/pass/encrypt
@@ -26,7 +26,7 @@ data EncryptedCredential : pass v1 {
     tag: bytes(16),
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/encrypt
+    govern lex global/org/polylabs/pass/encrypt
     cortex {
         redact [ciphertext, tag]
         infer on_write
@@ -39,7 +39,7 @@ data WrappedVaultKey : pass v1 {
     nonce: Nonce,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/encrypt
+    govern lex global/org/polylabs/pass/encrypt
     cortex {
         redact [wrapped_key]
         infer on_write
@@ -53,7 +53,7 @@ data VaultKeyRotation : pass v1 {
     rotated_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/pass/encrypt
+    govern lex global/org/polylabs/pass/encrypt
     cortex {
         infer on_write
         on_anomaly alert "pass-security"
@@ -63,11 +63,11 @@ data VaultKeyRotation : pass v1 {
 
 stream encrypt_events: event<EncryptedCredential>
     retention 365d
-    consumers [streamsight, audit]
+    consumers [observe, audit]
 
 stream key_rotation_events: event<VaultKeyRotation>
     retention 7y
-    consumers [streamsight, governance, audit]
+    consumers [observe, governance, audit]
 
 // ── Circuits ────────────────────────────────────────────────────
 
@@ -79,10 +79,10 @@ circuit encrypt_credential(
     user_id: bytes(16),
 ) -> EncryptedCredential
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/encrypt
-    precision C
+    lex global/org/polylabs/pass/encrypt
+    @precision C
     constant_time true
-    observe metrics: [encrypt_ops, encrypt_latency_ns, bytes_encrypted]
+    @observe metrics: [encrypt_ops, encrypt_latency_ns, bytes_encrypted]
     monitor "encrypt_throughput" { encrypt_ops < 500/s }
     invariant "key_nonzero" { vault_key != zero(32) }
     invariant "plaintext_bounded" { len(plaintext) > 0 and len(plaintext) <= 65536 }
@@ -118,10 +118,10 @@ circuit decrypt_credential(
     user_id: bytes(16),
 ) -> bytes
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/encrypt
-    precision C
+    lex global/org/polylabs/pass/encrypt
+    @precision C
     constant_time true
-    observe metrics: [decrypt_ops, decrypt_latency_ns, decrypt_failures]
+    @observe metrics: [decrypt_ops, decrypt_latency_ns, decrypt_failures]
     monitor "decrypt_failure_rate" { decrypt_failures / decrypt_ops < 0.01 }
     invariant "key_nonzero" { vault_key != zero(32) }
     invariant "tag_present" { len(encrypted.tag) == 16 }
@@ -145,10 +145,10 @@ circuit derive_vault_key(
     vault_epoch: u32,
 ) -> WrappedVaultKey
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/encrypt
-    precision C
+    lex global/org/polylabs/pass/encrypt
+    @precision C
     constant_time true
-    observe metrics: [vault_key_derivations]
+    @observe metrics: [vault_key_derivations]
     invariant "seed_nonzero" { master_seed != zero(32) }
     property safety "no_seed_leak" { output contains no master_seed bits }
     meters [compute_cycles, memory_bytes]
@@ -178,10 +178,10 @@ circuit rotate_vault_key(
     signing_sk: bytes(4896),
 ) -> VaultKeyRotation
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/pass/encrypt
-    precision C
+    lex global/org/polylabs/pass/encrypt
+    @precision C
     constant_time true
-    observe metrics: [key_rotations, credentials_rewrapped, rotation_latency_ns]
+    @observe metrics: [key_rotations, credentials_rewrapped, rotation_latency_ns]
     monitor "rotation_size" { credentials_rewrapped < 10000 }
     invariant "keys_differ" { old_vault_key != hkdf_sha3(new_master_seed, concat("vault-key:epoch:", new_epoch), 32) }
     invariant "count_match" { len(credential_ids) == len(encrypted_credentials) }
@@ -246,7 +246,7 @@ test golden "derive_vault_key_deterministic" {
     assert wk.nonce != zero(12)
 }
 
-kat_vector "aes_gcm_encrypt_credential" {
+golden_test "aes_gcm_encrypt_credential" {
     key: bytes(32, 0xAA)
     nonce: bytes(12, 0xBB)
     plaintext: bytes(64, 0xCC)
@@ -254,14 +254,14 @@ kat_vector "aes_gcm_encrypt_credential" {
     function: aes_gcm_encrypt
 }
 
-kat_vector "hkdf_sha3_cred_key" {
+golden_test "hkdf_sha3_cred_key" {
     ikm: bytes(32, 0xAA)
     info: "cred-key:test"
     length: 32
     function: hkdf_sha3
 }
 
-kat_vector "mlkem_encaps_vault_key" {
+golden_test "mlkem_encaps_vault_key" {
     pk: bytes(1568, 0xCC)
     function: mlkem_encaps
 }
