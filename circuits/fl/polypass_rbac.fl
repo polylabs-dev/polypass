@@ -220,7 +220,7 @@ circuit create_role(
 {
     let admin_id = polykit_identity::derive_user_id(admin_pk)
     let ts = now_ns() / 1000000
-    let role_id = sha3_256(concat(org_id, name, csprng(16), ts))
+    let role_id = sha3_512(concat(org_id, name, csprng(16), ts))
 
     let role = RoleNode {
         role_id: role_id,
@@ -241,7 +241,7 @@ circuit create_role(
 
     for parent_role_id in inherits_from {
         let edge = RoleInheritsEdge {
-            edge_id: bit_slice(sha3_256(concat(role_id, parent_role_id)), 0, 128),
+            edge_id: bit_slice(sha3_512(concat(role_id, parent_role_id)), 0, 128),
             priority: 0,
             created_at: ts,
         }
@@ -272,7 +272,7 @@ circuit assign_role(
     let ts = now_ns() / 1000000
 
     let edge = HasRoleEdge {
-        edge_id: bit_slice(sha3_256(concat(principal_id, role_id, scope_vault_id, ts)), 0, 128),
+        edge_id: bit_slice(sha3_512(concat(principal_id, role_id, scope_vault_id, ts)), 0, 128),
         role_id: role_id,
         granted_at: ts,
         granted_by: admin_id,
@@ -329,7 +329,7 @@ circuit revoke_role(
     let _sig = mldsa_sign(signing_sk, concat(principal_id, role_id, "revoke", ts))
 
     let audit = RbacAuditEntry {
-        entry_id: sha3_256(concat(principal_id, role_id, "revoke", ts)),
+        entry_id: sha3_512(concat(principal_id, role_id, "revoke", ts)),
         principal_id: principal_id,
         action: "revoke_role",
         resource_id: role_id,
@@ -369,7 +369,7 @@ circuit check_access(
     let principal = graph_query(rbac_graph, principal_id)
     if not principal.active {
         let audit = RbacAuditEntry {
-            entry_id: sha3_256(concat(principal_id, resource_id, ts)),
+            entry_id: sha3_512(concat(principal_id, resource_id, ts)),
             principal_id: principal_id,
             action: "access_check",
             resource_id: resource_id,
@@ -408,7 +408,7 @@ circuit check_access(
     }
 
     let audit = RbacAuditEntry {
-        entry_id: sha3_256(concat(principal_id, resource_id, ts)),
+        entry_id: sha3_512(concat(principal_id, resource_id, ts)),
         principal_id: principal_id,
         action: "access_check",
         resource_id: resource_id,

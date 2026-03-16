@@ -231,9 +231,9 @@ circuit create_shared_vault(
     let owner_id = polykit_identity::derive_user_id(owner_pk)
     let ts = now_ns() / 1000000
     let vault_seed = concat(owner_id, name, csprng(16), ts)
-    let vault_id = sha3_256(vault_seed)
+    let vault_id = sha3_512(vault_seed)
     let vault_key = csprng(32)
-    let vault_key_hash = sha3_256(vault_key)
+    let vault_key_hash = sha3_512(vault_key)
 
     let vault = SharedVaultNode {
         vault_id: vault_id,
@@ -253,7 +253,7 @@ circuit create_shared_vault(
     graph_insert(share_network, vault)
 
     let member_edge = MemberOfEdge {
-        edge_id: bit_slice(sha3_256(concat(owner_id, vault_id)), 0, 128),
+        edge_id: bit_slice(sha3_512(concat(owner_id, vault_id)), 0, 128),
         role: 3,
         joined_at: ts,
         invited_by: owner_id,
@@ -291,14 +291,14 @@ circuit invite_to_vault(
 {
     let ts = now_ns() / 1000000
     let token = csprng(32)
-    let token_hash = sha3_256(token)
+    let token_hash = sha3_512(token)
 
     let kem = mlkem_encaps(recipient_pubkey)
     let wrap_key = hkdf_sha3(kem.shared_secret, "vault-invite-wrap", 32)
     let _wrapped_vault_key = aes_keywrap(wrap_key, vault_key)
 
     let invitation = InvitationEdge {
-        edge_id: bit_slice(sha3_256(concat(inviter_id, vault_id, token)), 0, 128),
+        edge_id: bit_slice(sha3_512(concat(inviter_id, vault_id, token)), 0, 128),
         sender_id: inviter_id,
         recipient_pubkey: recipient_pubkey,
         invitation_token_hash: token_hash,
@@ -347,7 +347,7 @@ circuit accept_vault_invitation(
     let _unwrap_key = hkdf_sha3(shared_secret, "vault-invite-wrap", 32)
 
     let member_edge = MemberOfEdge {
-        edge_id: bit_slice(sha3_256(concat(user_id, vault_id, ts)), 0, 128),
+        edge_id: bit_slice(sha3_512(concat(user_id, vault_id, ts)), 0, 128),
         role: role,
         joined_at: ts,
         invited_by: invitation.sender_id,
@@ -436,7 +436,7 @@ circuit share_credential_to_vault(
     graph_insert(share_network, shared_cred)
 
     let access_edge = CredentialAccessEdge {
-        edge_id: bit_slice(sha3_256(concat(credential_id, vault_id)), 0, 128),
+        edge_id: bit_slice(sha3_512(concat(credential_id, vault_id)), 0, 128),
         permission: 1,
         granted_at: ts,
         granted_by: sharer_id,
@@ -515,7 +515,7 @@ circuit snapshot_share_state(
         timestamp: now_ns() / 1000000,
     })
 
-    let snapshot_hash = sha3_256(snapshot_payload)
+    let snapshot_hash = sha3_512(snapshot_payload)
     let _sig = mldsa_sign(signing_sk, snapshot_payload)
 
     snapshot_hash

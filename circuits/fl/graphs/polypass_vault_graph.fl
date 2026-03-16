@@ -188,7 +188,7 @@ circuit create_credential(
     let user_id = polykit_identity::derive_user_id(user_pk)
     let ts = now_ns() / 1000000
     let cred_seed = concat(user_id, url_domain, csprng(16), ts)
-    let credential_id = sha3_256(cred_seed)
+    let credential_id = sha3_512(cred_seed)
 
     let cred = CredentialNode {
         credential_id: credential_id,
@@ -261,8 +261,8 @@ circuit update_credential(
 
     if password_encrypted != none {
         let history_edge = CredentialHistoryEdge {
-            edge_id: bit_slice(sha3_256(concat(credential_id, ts)), 0, 128),
-            previous_password_hash: sha3_256(existing.password_encrypted),
+            edge_id: bit_slice(sha3_512(concat(credential_id, ts)), 0, 128),
+            previous_password_hash: sha3_512(existing.password_encrypted),
             rotated_at: ts,
             rotation_reason: 0,
         }
@@ -340,7 +340,7 @@ circuit create_folder(
 {
     let user_id = polykit_identity::derive_user_id(user_pk)
     let ts = now_ns() / 1000000
-    let folder_id = sha3_256(concat(user_id, name, csprng(16), ts))
+    let folder_id = sha3_512(concat(user_id, name, csprng(16), ts))
 
     let folder = FolderNode {
         folder_id: folder_id,
@@ -358,7 +358,7 @@ circuit create_folder(
 
     if len(parent_folder_id) > 0 {
         let edge = ContainsEdge {
-            edge_id: bit_slice(sha3_256(concat(parent_folder_id, folder_id)), 0, 128),
+            edge_id: bit_slice(sha3_512(concat(parent_folder_id, folder_id)), 0, 128),
             added_at: ts,
             position: 0,
         }
@@ -392,7 +392,7 @@ circuit move_credential(
     }
 
     let edge = ContainsEdge {
-        edge_id: bit_slice(sha3_256(concat(to_folder_id, credential_id, ts)), 0, 128),
+        edge_id: bit_slice(sha3_512(concat(to_folder_id, credential_id, ts)), 0, 128),
         added_at: ts,
         position: 0,
     }
@@ -517,7 +517,7 @@ circuit snapshot_vault_state(
         timestamp: now_ns() / 1000000,
     })
 
-    let snapshot_hash = sha3_256(snapshot_payload)
+    let snapshot_hash = sha3_512(snapshot_payload)
     let _sig = mldsa_sign(signing_sk, snapshot_payload)
 
     snapshot_hash

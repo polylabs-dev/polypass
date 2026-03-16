@@ -12,29 +12,30 @@ target = ["wasm32-wasi", "native"]
 optimization = "size"
 strip = true
 
+# Wire opcodes relocated to 0xC0-0xDF to avoid collision with Poly Messenger (0xB0-0xB5)
 [wire]
 pass_opcodes = [
-    { code = "0xB0", name = "VAULT_STORE",       circuit = "encrypt_credential" },
-    { code = "0xB1", name = "VAULT_RETRIEVE",     circuit = "decrypt_credential" },
-    { code = "0xB2", name = "VAULT_KEY_DERIVE",   circuit = "derive_vault_key" },
-    { code = "0xB3", name = "VAULT_KEY_ROTATE",   circuit = "rotate_vault_key" },
-    { code = "0xB4", name = "AUTOFILL_MATCH",     circuit = "match_url" },
-    { code = "0xB5", name = "AUTOFILL_FILL",      circuit = "autofill_form" },
-    { code = "0xB6", name = "SHARE_CREATE",       circuit = "share_credential" },
-    { code = "0xB7", name = "SHARE_ACCEPT",       circuit = "accept_share" },
-    { code = "0xB8", name = "SHARE_REVOKE",       circuit = "revoke_share" },
-    { code = "0xB9", name = "IMPORT_CSV",         circuit = "import_csv" },
-    { code = "0xBA", name = "IMPORT_1PASSWORD",   circuit = "import_1password" },
-    { code = "0xBB", name = "IMPORT_BITWARDEN",   circuit = "import_bitwarden" },
-    { code = "0xC0", name = "BREACH_CHECK",       circuit = "check_breach" },
-    { code = "0xC1", name = "BREACH_BATCH",       circuit = "check_breach_batch" },
-    { code = "0xC2", name = "BREACH_MONITOR",     circuit = "subscribe_breach_monitor" },
-    { code = "0xC3", name = "TOTP_GENERATE",      circuit = "generate_totp" },
-    { code = "0xC4", name = "HOTP_GENERATE",      circuit = "generate_hotp" },
-    { code = "0xC5", name = "TOTP_VERIFY",        circuit = "verify_totp" },
-    { code = "0xC6", name = "RBAC_CHECK",         circuit = "check_access" },
-    { code = "0xC7", name = "RBAC_ASSIGN",        circuit = "assign_role" },
-    { code = "0xC8", name = "RBAC_REVOKE",        circuit = "revoke_role" },
+    { code = "0xC0", name = "VAULT_STORE",       circuit = "encrypt_credential" },
+    { code = "0xC1", name = "VAULT_RETRIEVE",     circuit = "decrypt_credential" },
+    { code = "0xC2", name = "VAULT_KEY_DERIVE",   circuit = "derive_vault_key" },
+    { code = "0xC3", name = "VAULT_KEY_ROTATE",   circuit = "rotate_vault_key" },
+    { code = "0xC4", name = "AUTOFILL_MATCH",     circuit = "match_url" },
+    { code = "0xC5", name = "AUTOFILL_FILL",      circuit = "autofill_form" },
+    { code = "0xC6", name = "SHARE_CREATE",       circuit = "share_credential" },
+    { code = "0xC7", name = "SHARE_ACCEPT",       circuit = "accept_share" },
+    { code = "0xC8", name = "SHARE_REVOKE",       circuit = "revoke_share" },
+    { code = "0xC9", name = "IMPORT_CSV",         circuit = "import_csv" },
+    { code = "0xCA", name = "IMPORT_1PASSWORD",   circuit = "import_1password" },
+    { code = "0xCB", name = "IMPORT_BITWARDEN",   circuit = "import_bitwarden" },
+    { code = "0xD0", name = "BREACH_CHECK",       circuit = "check_breach" },
+    { code = "0xD1", name = "BREACH_BATCH",       circuit = "check_breach_batch" },
+    { code = "0xD2", name = "BREACH_MONITOR",     circuit = "subscribe_breach_monitor" },
+    { code = "0xD3", name = "TOTP_GENERATE",      circuit = "generate_totp" },
+    { code = "0xD4", name = "HOTP_GENERATE",      circuit = "generate_hotp" },
+    { code = "0xD5", name = "TOTP_VERIFY",        circuit = "verify_totp" },
+    { code = "0xD6", name = "RBAC_CHECK",         circuit = "check_access" },
+    { code = "0xD7", name = "RBAC_ASSIGN",        circuit = "assign_role" },
+    { code = "0xD8", name = "RBAC_REVOKE",        circuit = "revoke_role" },
 ]
 
 [stratum]

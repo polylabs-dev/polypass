@@ -131,7 +131,7 @@ circuit share_credential(
     let wrap_key = hkdf_sha3(kem.shared_secret, "share-key-wrap", 32)
     let wrapped = aes_keywrap(wrap_key, credential_key)
 
-    let invitation_id = bit_slice(sha3_256(concat(sender_id, credential_id, csprng(16))), 0, 128)
+    let invitation_id = bit_slice(sha3_512(concat(sender_id, credential_id, csprng(16))), 0, 128)
     let expires_at = ts + (ttl_days * 86400000)
 
     let payload = concat(invitation_id, sender_id, credential_id, wrapped, permission, expires_at)
@@ -259,7 +259,7 @@ circuit create_shared_vault(
     wasm_abi [csprng, now, eslite_insert]
 {
     let ts = now_ns() / 1000000
-    let vault_id = bit_slice(sha3_256(concat(owner_id, name, csprng(16))), 0, 128)
+    let vault_id = bit_slice(sha3_512(concat(owner_id, name, csprng(16))), 0, 128)
 
     let vault = SharedVault {
         vault_id: vault_id,

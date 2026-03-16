@@ -154,7 +154,7 @@ circuit polypass_platform_health(
     }
 
     let payload = serialize(blinded_id, window_start_ms, window_end_ms, noised_queries, noised_vaults)
-    let snap_hash = sha3_256(payload)
+    let snap_hash = sha3_512(payload)
 
     let metrics = PlatformMetrics {
         blinded_pass_id: blinded_id,

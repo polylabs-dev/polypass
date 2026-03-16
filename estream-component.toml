@@ -1,6 +1,6 @@
 [package]
 name = "@polylabs/polypass"
-version = "0.2.0"
+version = "0.12.0"
 description = "PQ password manager — SPARK biometric vault, credential autofill, breach monitoring, TOTP/HOTP, and RBAC"
 license = "LicenseRef-PolyQuantum-Commercial"
 repository = "https://github.com/polylabs-dev/polypass"

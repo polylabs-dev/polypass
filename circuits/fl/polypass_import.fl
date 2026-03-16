@@ -124,12 +124,12 @@ circuit import_csv(
 
     let imported = 0
     for cred in parsed {
-        let cred_id = bit_slice(sha3_256(concat(user_id, cred.domain, cred.username, csprng(16))), 0, 128)
+        let cred_id = bit_slice(sha3_512(concat(user_id, cred.domain, cred.username, csprng(16))), 0, 128)
         let cred_key = hkdf_sha3(vault_key, concat("cred-key:", cred_id), 32)
         let nonce = csprng(12)
-        let aad = concat(cred_id, sha3_256(user_id))
+        let aad = concat(cred_id, sha3_512(user_id))
         let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, aad)
-        let _sig = mldsa_sign(signing_sk, concat(cred_id, sha3_256(cred.domain)))
+        let _sig = mldsa_sign(signing_sk, concat(cred_id, sha3_512(cred.domain)))
         imported = imported + 1
     }
 
@@ -181,11 +181,11 @@ circuit import_1password(
 
     let imported = 0
     for cred in parsed {
-        let cred_id = bit_slice(sha3_256(concat(user_id, cred.domain, cred.username, csprng(16))), 0, 128)
+        let cred_id = bit_slice(sha3_512(concat(user_id, cred.domain, cred.username, csprng(16))), 0, 128)
         let cred_key = hkdf_sha3(vault_key, concat("cred-key:", cred_id), 32)
         let nonce = csprng(12)
-        let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(cred_id, sha3_256(user_id)))
-        let _sig = mldsa_sign(signing_sk, concat(cred_id, sha3_256(cred.domain)))
+        let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(cred_id, sha3_512(user_id)))
+        let _sig = mldsa_sign(signing_sk, concat(cred_id, sha3_512(cred.domain)))
         imported = imported + 1
     }
 
@@ -225,11 +225,11 @@ circuit import_bitwarden(
 
     let imported = 0
     for cred in parsed {
-        let cred_id = bit_slice(sha3_256(concat(user_id, cred.domain, cred.username, csprng(16))), 0, 128)
+        let cred_id = bit_slice(sha3_512(concat(user_id, cred.domain, cred.username, csprng(16))), 0, 128)
         let cred_key = hkdf_sha3(vault_key, concat("cred-key:", cred_id), 32)
         let nonce = csprng(12)
-        let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(cred_id, sha3_256(user_id)))
-        let _sig = mldsa_sign(signing_sk, concat(cred_id, sha3_256(cred.domain)))
+        let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(cred_id, sha3_512(user_id)))
+        let _sig = mldsa_sign(signing_sk, concat(cred_id, sha3_512(cred.domain)))
         imported = imported + 1
     }
 
@@ -268,7 +268,7 @@ circuit detect_duplicates(
     let duplicates = []
 
     for cred in imported {
-        let username_hash = sha3_256(cred.username)
+        let username_hash = sha3_512(cred.username)
         let best_score = 0
         let best_idx = -1
 
@@ -290,7 +290,7 @@ circuit detect_duplicates(
             duplicates = append(duplicates, DuplicateMatch {
                 existing_credential_id: existing_credential_ids[best_idx],
                 imported_domain: cred.domain,
-                imported_username_hash: sha3_256(cred.username),
+                imported_username_hash: sha3_512(cred.username),
                 similarity_score: best_score,
                 action: 0,
             })
@@ -328,19 +328,19 @@ circuit merge_entries(
                 let cred = imported[idx]
                 let cred_key = hkdf_sha3(vault_key, concat("cred-key:", dup.existing_credential_id), 32)
                 let nonce = csprng(12)
-                let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(dup.existing_credential_id, sha3_256(user_id)))
-                let _sig = mldsa_sign(signing_sk, concat(dup.existing_credential_id, sha3_256(cred.domain)))
+                let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(dup.existing_credential_id, sha3_512(user_id)))
+                let _sig = mldsa_sign(signing_sk, concat(dup.existing_credential_id, sha3_512(cred.domain)))
                 merged = merged + 1
             }
         } else if dup.action == 2 {
             let idx = find_imported_by_hash(imported, dup.imported_username_hash, dup.imported_domain)
             if idx >= 0 {
                 let cred = imported[idx]
-                let new_id = bit_slice(sha3_256(concat(user_id, cred.domain, csprng(16))), 0, 128)
+                let new_id = bit_slice(sha3_512(concat(user_id, cred.domain, csprng(16))), 0, 128)
                 let cred_key = hkdf_sha3(vault_key, concat("cred-key:", new_id), 32)
                 let nonce = csprng(12)
-                let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(new_id, sha3_256(user_id)))
-                let _sig = mldsa_sign(signing_sk, concat(new_id, sha3_256(cred.domain)))
+                let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, cred.password, concat(new_id, sha3_512(user_id)))
+                let _sig = mldsa_sign(signing_sk, concat(new_id, sha3_512(cred.domain)))
                 merged = merged + 1
             }
         }

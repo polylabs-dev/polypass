@@ -246,15 +246,15 @@ circuit save_from_form(
     let credential_id = if candidate.is_update and candidate.existing_credential_id != none {
         unwrap(candidate.existing_credential_id)
     } else {
-        bit_slice(sha3_256(concat(user_id, candidate.url, csprng(16))), 0, 128)
+        bit_slice(sha3_512(concat(user_id, candidate.url, csprng(16))), 0, 128)
     }
 
     let cred_key = hkdf_sha3(vault_key, concat("cred-key:", credential_id), 32)
     let nonce = csprng(12)
-    let aad = concat(credential_id, sha3_256(user_id))
+    let aad = concat(credential_id, sha3_512(user_id))
     let (_ct, _tag) = aes_gcm_encrypt(cred_key, nonce, candidate.password_encrypted, aad)
 
-    let _sig = mldsa_sign(signing_sk, concat(credential_id, sha3_256(candidate.url)))
+    let _sig = mldsa_sign(signing_sk, concat(credential_id, sha3_512(candidate.url)))
 
     polykit_metering::record_usage(user_id, "pass_autofill_save", DimensionValues {
         executions: 1, hashes: 2, bandwidth: 0,
