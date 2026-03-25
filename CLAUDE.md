@@ -1,6 +1,6 @@
 # Poly Pass
 
-Post-quantum encrypted password manager built on eStream v0.8.3 and PolyKit v0.3.0.
+Post-quantum encrypted password manager built on eStream v0.22.0 and PolyKit v0.3.0. **100% FastLang — no hand-written Rust.**
 
 ## Overview
 
@@ -13,17 +13,15 @@ Poly Pass is a quantum-safe password manager where credentials are individually 
 - **State machine**: `credential_lifecycle` (ACTIVE → EXPIRED → ROTATED → COMPROMISED → DELETED)
 - **Overlays**: breach_status, password_age_days, strength_score, last_used_ns, autofill_count
 - **ai_feed**: breach_alerting on vault_registry
-- **Build**: FastLang `.fl` → ESCIR → Rust/WASM → `.escd`
+- **Build**: FastLang `.fl` → FLIR → Rust/WASM → `.escd`
 - **RBAC**: eStream `rbac.fl` composed via PolyKit profiles
 
-## Architecture
+## FL Circuits (12)
 
-See `docs/ARCHITECTURE.md` for full specification including graph/DAG constructs, FastLang circuits, scatter-cas integration, and sharing design.
+All product logic lives in FastLang circuits. No hand-written Rust in the application layer.
 
-## Key Components
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
+| Circuit | Location | Purpose |
+|---------|----------|---------|
 | Vault Graph | `circuits/fl/graphs/polypass_vault_graph.fl` | Credential store as typed graph |
 | Share Graph | `circuits/fl/graphs/polypass_share_graph.fl` | Sharing ACLs + family/team vaults |
 | Encrypt | `circuits/fl/polypass_encrypt.fl` | ML-KEM-1024 key gen, AES-256-GCM encryption |
@@ -31,10 +29,28 @@ See `docs/ARCHITECTURE.md` for full specification including graph/DAG constructs
 | Audit | `circuits/fl/polypass_audit.fl` | Breach check, strength scoring |
 | Share | `circuits/fl/polypass_share.fl` | Key re-wrapping, share lifecycle |
 | Import | `circuits/fl/polypass_import.fl` | Multi-format import (1Password, Bitwarden, etc.) |
-| Core SDK | `crates/poly-pass-core/` | Rust core for vault encrypt/decrypt, autofill |
+| TOTP | `circuits/fl/polypass_totp.fl` | TOTP/HOTP generation and verification |
+| Breach | `circuits/fl/polypass_breach.fl` | Breach monitoring and alerting |
+| RBAC | `circuits/fl/polypass_rbac.fl` | Role-based access control |
+| Metering | `circuits/fl/polypass_metering.fl` | 8-dimension usage metering |
+| Platform Health | `circuits/fl/polypass_platform_health.fl` | Circuit health and diagnostics |
+
+## Legacy Rust Crates (Superseded)
+
+The `crates/` directory contains legacy hand-written Rust code that has been fully superseded by the FL circuits above. These crates are retained for reference but are **not compiled or deployed**:
+
+- `crates/poly-pass-core/` — Types, crypto/vault_crypto, graphs, circuit wrappers
+- `crates/poly-pass-wasm/` — WASM entry crate
+
+All functionality previously in these crates is now implemented in FL circuits, which compile via FLIR codegen to Rust/WASM.
+
+## Apps
+
+| App | Location | Stack |
+|-----|----------|-------|
 | Browser Extension | `apps/extension/` | Autofill, password generator |
 | Desktop App | `apps/desktop/` | Tauri-based vault manager |
-| Mobile App | `apps/mobile/` | React Native with Rust FFI |
+| Mobile App | `apps/mobile/` | React Native with FLIR-generated FFI |
 
 ## No REST API
 
@@ -51,7 +67,7 @@ All sync uses the eStream Wire Protocol (QUIC/UDP). No REST/HTTP endpoints.
 
 ## Platform
 
-- eStream v0.8.3
+- eStream v0.22.0
 - PolyKit v0.3.0
 - ML-KEM-1024, ML-DSA-87, SHA3-256
 - 8-Dimension metering
