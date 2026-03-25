@@ -4,7 +4,7 @@
 **Date**: February 2026
 **Platform**: eStream v0.9.1
 **Upstream**: PolyKit v0.3.0, eStream scatter-cas, graph/DAG constructs
-**Build Pipeline**: FastLang (.fl) → ESCIR → Rust/WASM codegen → .escd
+**Build Pipeline**: FastLang (.fl) → FLIR → Rust/WASM codegen → .escd
 
 ---
 
@@ -19,7 +19,7 @@ Poly Pass is a post-quantum encrypted password manager with SPARK biometric auth
 | Vault model | Flat encrypted container | `graph vault_registry` with typed overlays |
 | Sharing | Flat ACL stream | `graph share_network` with typed edges + `share_lifecycle` state machine |
 | Credential state | Implicit | `state_machine credential_lifecycle` (ACTIVE → DELETED) |
-| Circuit format | ESCIR YAML (`circuit.escir.yaml`) | FastLang `.fl` with PolyKit profiles |
+| Circuit format | FLIR YAML (`circuit.flir.yaml`) | FastLang `.fl` with PolyKit profiles |
 | RBAC | Per-circuit annotations | eStream `rbac.fl` composed via PolyKit |
 | Platform | eStream v0.8.1 | eStream v0.9.1 |
 

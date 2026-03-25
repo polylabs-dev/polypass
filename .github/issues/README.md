@@ -9,7 +9,7 @@
 | 001 | Scaffold poly-pass-core Rust crate | Open | P0 |
 | 002 | Vault encryption (per-item ML-KEM-1024) | Open | P0 |
 | 003 | SPARK biometric vault unlock (no master password) | Open | P0 |
-| 004 | Design ESCIR vault sync circuit | Open | P0 |
+| 004 | Design FLIR vault sync circuit | Open | P0 |
 | 005 | Scatter-stored vault sync | Open | P0 |
 | 006 | Password generator (random + passphrase) | Open | P0 |
 | 007 | Tauri desktop app | Open | P0 |

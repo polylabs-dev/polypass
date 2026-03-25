@@ -104,7 +104,7 @@ circuit polypass_platform_health(
     @observe true
     constant_time true
     @serialize "verify/polypass_platform_health.esz"
-    li_feed full_escir true, optimized_ir true, optimization_metadata true
+    li_feed full_flir true, optimized_ir true, optimization_metadata true
     @observe metrics: [health_snapshots_emitted, health_snapshots_rejected, pass_anomalies_detected]
     monitor "breach_check_rate" { breach_checks < 5000/hr }
     monitor "health_emission_rate" { health_snapshots_emitted < 60/hr }
