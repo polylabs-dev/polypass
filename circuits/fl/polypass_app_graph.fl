@@ -1,0 +1,624 @@
+/// Spec: specs/POLYPASS_CE_APP_GRAPH_SPEC.md
+/// App Graph for PolyPass — 12 ModuleNode definitions (10 circuits + 2 graphs)
+/// composing the PQ password manager. Registers intra-graph REQUIRES edges,
+/// bridge edges to PolyOAuth + PolyAuthenticator, and golden tests.
+
+lex polylabs/polypass
+
+@target software
+@codegen_targets ["wasm", "rust", "wasm-browser"]
+
+import "core/deployment/module_stratum.fl" {
+    ModuleNode, ModuleEdge, InterAppEdge, CsrStorage,
+    CompilationReceipt, ResourceBudget8D, SemVer, CanaryTarget,
+    ModuleType, AperturePartition, ModuleState, RolloutState,
+    PersistencePolicy, OfflineCachePolicy, SLATier, EntitlementTier,
+    EnforcementMode, BridgeScope,
+    module_graph_add_module, module_graph_add_edge,
+    module_graph_add_bridge_edge,
+    EDGE_REQUIRES, EDGE_BRIDGE_TO,
+}
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const POLYPASS_VERSION_MAJOR: u32 = 0
+const POLYPASS_VERSION_MINOR: u32 = 1
+const POLYPASS_VERSION_PATCH: u32 = 0
+const POLYPASS_APP_LEX: string = "polylabs/polypass"
+const POLYPASS_VERSION_STR: string = "0.1.0"
+const POLYPASS_MODULE_COUNT: u64 = 12
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+circuit polypass_placeholder_receipt() -> CompilationReceipt
+    lex polylabs/polypass
+    @status production
+    @precision D
+{
+    CompilationReceipt {
+        source_hash: bytes(32, 0x00),
+        compiler_version: SemVer {
+            major: POLYPASS_VERSION_MAJOR,
+            minor: POLYPASS_VERSION_MINOR,
+            patch: POLYPASS_VERSION_PATCH,
+            pre_release: "",
+        },
+        output_hash: bytes(32, 0x00),
+        prime_device_id: None,
+        compilation_timestamp: 0,
+        reproducible_verified: false,
+        receipt_signature: bytes(4627, 0x00),
+    }
+}
+
+circuit make_polypass_module(
+    name: string,
+    aperture: u8,
+    cache_policy: u8,
+    sla: u8,
+    budget: ResourceBudget8D
+) -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision C
+    observe metrics: [module_name, aperture_partition]
+    meters [compute_cycles]
+{
+    ModuleNode {
+        name: name,
+        version_major: POLYPASS_VERSION_MAJOR,
+        version_minor: POLYPASS_VERSION_MINOR,
+        version_patch: POLYPASS_VERSION_PATCH,
+        version_pre: "",
+        module_type: ModuleType::SmartCircuit as u8,
+        content_hash: bytes(32, 0x00),
+        signature_chain: bytes(0),
+        aperture_partition: aperture,
+        role_set: ["Owner", "FamilyMember", "TeamAdmin", "Auditor"],
+        required_entitlement: EntitlementTier::Free as u8,
+        classification_domains: [],
+        max_classification_level: 0,
+        compilation_receipt: polypass_placeholder_receipt(),
+        source_hash: bytes(32, 0x00),
+        compiler_version_major: POLYPASS_VERSION_MAJOR,
+        compiler_version_minor: POLYPASS_VERSION_MINOR,
+        prime_device_id: bytes(0),
+        reproducible_verified: false,
+        resource_budget: budget,
+        budget_enforcement_mode: EnforcementMode::Hard as u8,
+        state: ModuleState::Active as u8,
+        rollout_state: RolloutState::Canary as u8,
+        canary_target: None,
+        persistence: PersistencePolicy::Persistent as u8,
+        offline_cache_policy: cache_policy,
+        max_staleness_seconds: 86400,
+        sla_tier: sla,
+        preferred_locality: "edge",
+        created_at_ms: 0,
+        updated_at_ms: 0,
+    }
+}
+
+circuit make_requires_edge(
+    source: string,
+    target: string
+) -> ModuleEdge
+    lex polylabs/polypass
+    @status production
+    @precision D
+{
+    ModuleEdge {
+        edge_type: EDGE_REQUIRES,
+        source_module: source,
+        source_version: POLYPASS_VERSION_STR,
+        target_module: target,
+        target_version_constraint: ">=" ++ POLYPASS_VERSION_STR,
+        metadata: bytes(0),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Module Definitions — 12 ModuleNodes (10 circuits + 2 graphs)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── polypass_encrypt ── PQ vault encryption, ML-KEM-1024 key wrap ────────────
+
+circuit polypass_encrypt_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "polypass_encrypt",
+        AperturePartition::Backend as u8,
+        OfflineCachePolicy::OfflineFirst as u8,
+        SLATier::Premium as u8,
+        ResourceBudget8D {
+            execution: 200000,
+            hash_ops: 10000,
+            bandwidth: 30000,
+            storage: 100000,
+            observe_events: 5000,
+            proofs: 200,
+            consensus: 50,
+            memory: 33554432,
+        }
+    )
+}
+
+// ── polypass_autofill ── browser/app credential matching, phishing defense ───
+
+circuit polypass_autofill_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "polypass_autofill",
+        AperturePartition::Head as u8,
+        OfflineCachePolicy::OfflineFirst as u8,
+        SLATier::Premium as u8,
+        ResourceBudget8D {
+            execution: 150000,
+            hash_ops: 3000,
+            bandwidth: 20000,
+            storage: 50000,
+            observe_events: 8000,
+            proofs: 50,
+            consensus: 20,
+            memory: 16777216,
+        }
+    )
+}
+
+// ── polypass_breach ── k-anonymity breach check, dark web monitoring ─────────
+
+circuit polypass_breach_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "polypass_breach",
+        AperturePartition::Backend as u8,
+        OfflineCachePolicy::CacheAndVerify as u8,
+        SLATier::Standard as u8,
+        ResourceBudget8D {
+            execution: 100000,
+            hash_ops: 8000,
+            bandwidth: 40000,
+            storage: 30000,
+            observe_events: 3000,
+            proofs: 100,
+            consensus: 30,
+            memory: 16777216,
+        }
+    )
+}
+
+// ── polypass_totp ── RFC 6238/4226 TOTP/HOTP, PQ-signed seed storage ────────
+
+circuit polypass_totp_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "polypass_totp",
+        AperturePartition::Head as u8,
+        OfflineCachePolicy::OfflineFirst as u8,
+        SLATier::Premium as u8,
+        ResourceBudget8D {
+            execution: 50000,
+            hash_ops: 2000,
+            bandwidth: 5000,
+            storage: 20000,
+            observe_events: 2000,
+            proofs: 50,
+            consensus: 10,
+            memory: 8388608,
+        }
+    )
+}
+
+// ── polypass_share ── k-of-n threshold sharing, time-bounded access ──────────
+
+circuit polypass_share_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "polypass_share",
+        AperturePartition::Backend as u8,
+        OfflineCachePolicy::CacheAndVerify as u8,
+        SLATier::Standard as u8,
+        ResourceBudget8D {
+            execution: 80000,
+            hash_ops: 5000,
+            bandwidth: 30000,
+            storage: 40000,
+            observe_events: 4000,
+            proofs: 150,
+            consensus: 40,
+            memory: 16777216,
+        }
+    )
+}
+
+// ── polypass_import ── Chrome CSV, 1Password 1PUX, Bitwarden JSON, etc. ──────
+
+circuit polypass_import_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "polypass_import",
+        AperturePartition::Backend as u8,
+        OfflineCachePolicy::CacheAndVerify as u8,
+        SLATier::Standard as u8,
+        ResourceBudget8D {
+            execution: 120000,
+            hash_ops: 6000,
+            bandwidth: 60000,
+            storage: 80000,
+            observe_events: 3000,
+            proofs: 50,
+            consensus: 20,
+            memory: 33554432,
+        }
+    )
+}
+
+// ── polypass_rbac ── vault owner, family, team admin, auditor profiles ────────
+
+circuit polypass_rbac_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "polypass_rbac",
+        AperturePartition::Shared as u8,
+        OfflineCachePolicy::CacheAndVerify as u8,
+        SLATier::Standard as u8,
+        ResourceBudget8D {
+            execution: 40000,
+            hash_ops: 1000,
+            bandwidth: 10000,
+            storage: 15000,
+            observe_events: 2000,
+            proofs: 30,
+            consensus: 20,
+            memory: 8388608,
+        }
+    )
+}
+
+// ── polypass_audit ── ML-DSA-87 signed access logs, delta-curate history ─────
+
+circuit polypass_audit_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "polypass_audit",
+        AperturePartition::Backend as u8,
+        OfflineCachePolicy::CacheAndVerify as u8,
+        SLATier::Standard as u8,
+        ResourceBudget8D {
+            execution: 60000,
+            hash_ops: 4000,
+            bandwidth: 20000,
+            storage: 100000,
+            observe_events: 6000,
+            proofs: 100,
+            consensus: 30,
+            memory: 16777216,
+        }
+    )
+}
+
+// ── polypass_metering ── per-user credential count, autofill events ──────────
+
+circuit polypass_metering_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "polypass_metering",
+        AperturePartition::Backend as u8,
+        OfflineCachePolicy::CacheAndVerify as u8,
+        SLATier::Standard as u8,
+        ResourceBudget8D {
+            execution: 30000,
+            hash_ops: 500,
+            bandwidth: 10000,
+            storage: 20000,
+            observe_events: 10000,
+            proofs: 20,
+            consensus: 10,
+            memory: 8388608,
+        }
+    )
+}
+
+// ── polypass_platform_health ── vault integrity, key rotation, sync health ───
+
+circuit polypass_platform_health_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "polypass_platform_health",
+        AperturePartition::Backend as u8,
+        OfflineCachePolicy::CacheAndVerify as u8,
+        SLATier::Premium as u8,
+        ResourceBudget8D {
+            execution: 80000,
+            hash_ops: 5000,
+            bandwidth: 15000,
+            storage: 30000,
+            observe_events: 4000,
+            proofs: 80,
+            consensus: 20,
+            memory: 16777216,
+        }
+    )
+}
+
+// ── vault_graph ── credential vault DAG: folders, tags, entries, blobs ───────
+
+circuit vault_graph_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "vault_graph",
+        AperturePartition::Backend as u8,
+        OfflineCachePolicy::OfflineFirst as u8,
+        SLATier::Premium as u8,
+        ResourceBudget8D {
+            execution: 150000,
+            hash_ops: 8000,
+            bandwidth: 40000,
+            storage: 200000,
+            observe_events: 5000,
+            proofs: 100,
+            consensus: 40,
+            memory: 33554432,
+        }
+    )
+}
+
+// ── share_graph ── share tokens, recipient SPARK IDs, expiry, revocation ─────
+
+circuit share_graph_module() -> ModuleNode
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [module_init]
+    meters [compute_cycles]
+{
+    make_polypass_module(
+        "share_graph",
+        AperturePartition::Backend as u8,
+        OfflineCachePolicy::CacheAndVerify as u8,
+        SLATier::Standard as u8,
+        ResourceBudget8D {
+            execution: 60000,
+            hash_ops: 3000,
+            bandwidth: 20000,
+            storage: 40000,
+            observe_events: 3000,
+            proofs: 80,
+            consensus: 30,
+            memory: 16777216,
+        }
+    )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Graph Registration
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polypass_app_graph_register(
+    graph: CsrStorage
+) -> CsrStorage
+    lex polylabs/polypass
+    @status production
+    @precision B
+    @attested true
+    invariant "capacity" { graph.num_nodes + POLYPASS_MODULE_COUNT as u32 <= 4096 }
+    observe metrics: [registered_module_count, registered_edge_count]
+    meters [compute_cycles, memory_bytes]
+{
+    // ── Add all 12 modules ──────────────────────────────────────────────────
+    let (g, id_encrypt)         = module_graph_add_module(graph, polypass_encrypt_module())
+    let (g, id_autofill)        = module_graph_add_module(g, polypass_autofill_module())
+    let (g, id_breach)          = module_graph_add_module(g, polypass_breach_module())
+    let (g, id_totp)            = module_graph_add_module(g, polypass_totp_module())
+    let (g, id_share)           = module_graph_add_module(g, polypass_share_module())
+    let (g, id_import)          = module_graph_add_module(g, polypass_import_module())
+    let (g, id_rbac)            = module_graph_add_module(g, polypass_rbac_module())
+    let (g, id_audit)           = module_graph_add_module(g, polypass_audit_module())
+    let (g, id_metering)        = module_graph_add_module(g, polypass_metering_module())
+    let (g, id_platform_health) = module_graph_add_module(g, polypass_platform_health_module())
+    let (g, id_vault_graph)     = module_graph_add_module(g, vault_graph_module())
+    let (g, id_share_graph)     = module_graph_add_module(g, share_graph_module())
+
+    // ── Intra-graph REQUIRES edges ──────────────────────────────────────────
+
+    // polypass_autofill -> polypass_encrypt, vault_graph
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_autofill", "polypass_encrypt"), id_autofill, id_encrypt)
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_autofill", "vault_graph"), id_autofill, id_vault_graph)
+
+    // polypass_breach -> polypass_encrypt, vault_graph
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_breach", "polypass_encrypt"), id_breach, id_encrypt)
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_breach", "vault_graph"), id_breach, id_vault_graph)
+
+    // polypass_totp -> polypass_encrypt
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_totp", "polypass_encrypt"), id_totp, id_encrypt)
+
+    // polypass_share -> polypass_encrypt, polypass_rbac, share_graph
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_share", "polypass_encrypt"), id_share, id_encrypt)
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_share", "polypass_rbac"), id_share, id_rbac)
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_share", "share_graph"), id_share, id_share_graph)
+
+    // polypass_import -> polypass_encrypt, vault_graph
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_import", "polypass_encrypt"), id_import, id_encrypt)
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_import", "vault_graph"), id_import, id_vault_graph)
+
+    // polypass_audit -> polypass_rbac, vault_graph
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_audit", "polypass_rbac"), id_audit, id_rbac)
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_audit", "vault_graph"), id_audit, id_vault_graph)
+
+    // polypass_metering -> vault_graph
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_metering", "vault_graph"), id_metering, id_vault_graph)
+
+    // polypass_platform_health -> polypass_encrypt, vault_graph
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_platform_health", "polypass_encrypt"), id_platform_health, id_encrypt)
+    let g = module_graph_add_edge(g, make_requires_edge("polypass_platform_health", "vault_graph"), id_platform_health, id_vault_graph)
+
+    // vault_graph -> polypass_encrypt
+    let g = module_graph_add_edge(g, make_requires_edge("vault_graph", "polypass_encrypt"), id_vault_graph, id_encrypt)
+
+    // share_graph -> polypass_rbac
+    let g = module_graph_add_edge(g, make_requires_edge("share_graph", "polypass_rbac"), id_share_graph, id_rbac)
+
+    g
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Cross-Graph Bridge Edges — PolyOAuth + PolyAuthenticator
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polypass_register_bridge_edges(
+    graph: CsrStorage,
+    polyoauth_lex: string,
+    polyauthenticator_lex: string
+) -> CsrStorage
+    lex polylabs/polypass
+    @status production
+    @precision B
+    @attested true
+    observe metrics: [bridge_count]
+    meters [compute_cycles]
+{
+    let autofill_id = 0xFFFFFFFF as u32
+    let totp_id = 0xFFFFFFFF as u32
+
+    for i in 0..graph.num_nodes {
+        let node_data = graph.node_data[i]
+        let module = deserialize(node_data) as ModuleNode
+        if module.name == "polypass_autofill" {
+            autofill_id = i
+        }
+        if module.name == "polypass_totp" {
+            totp_id = i
+        }
+    }
+
+    let g = graph
+
+    // polypass_autofill -> PolyOAuth (SSO autofill routing)
+    if autofill_id != 0xFFFFFFFF as u32 {
+        let oauth_bridge = InterAppEdge {
+            edge_type: EDGE_BRIDGE_TO,
+            source_lex: POLYPASS_APP_LEX,
+            source_module: "polypass_autofill",
+            target_lex: polyoauth_lex,
+            target_module: "polyoauth_sso",
+            bridge_scope: BridgeScope::Product as u8,
+            shared_fields: ["spark_id", "sso_session_token", "credential_origin"],
+            redacted_fields: ["vault_master_key", "credential_password"],
+            bilateral_confirmed: false,
+        }
+        g = module_graph_add_bridge_edge(g, oauth_bridge, autofill_id)
+    }
+
+    // polypass_totp -> PolyAuthenticator (TOTP seed sync + FIDO2 store)
+    if totp_id != 0xFFFFFFFF as u32 {
+        let auth_bridge = InterAppEdge {
+            edge_type: EDGE_BRIDGE_TO,
+            source_lex: POLYPASS_APP_LEX,
+            source_module: "polypass_totp",
+            target_lex: polyauthenticator_lex,
+            target_module: "polyauthenticator_core",
+            bridge_scope: BridgeScope::Product as u8,
+            shared_fields: ["totp_seed_encrypted", "totp_issuer", "totp_account", "fido2_credential_id"],
+            redacted_fields: ["vault_master_key"],
+            bilateral_confirmed: false,
+        }
+        g = module_graph_add_bridge_edge(g, auth_bridge, totp_id)
+    }
+
+    g
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Golden Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+circuit test_polypass_module_count()
+    lex polylabs/polypass
+{
+    let graph = CsrStorage::new(4096)
+    let g = polypass_app_graph_register(graph)
+    assert(g.num_nodes == 12, "expected 12 modules")
+}
+
+#[test]
+circuit test_polypass_encrypt_is_premium()
+    lex polylabs/polypass
+{
+    let m = polypass_encrypt_module()
+    assert(m.sla_tier == SLATier::Premium as u8, "encrypt must be Premium SLA")
+    assert(m.aperture_partition == AperturePartition::Backend as u8, "encrypt must be Backend")
+}
+
+#[test]
+circuit test_polypass_bridge_edges()
+    lex polylabs/polypass
+{
+    let graph = CsrStorage::new(4096)
+    let g = polypass_app_graph_register(graph)
+    let g = polypass_register_bridge_edges(g, "polylabs/polyoauth", "polylabs/polyauthenticator")
+    assert(g.bridge_edge_count >= 2, "expected at least 2 bridge edges")
+}
+
+#[test]
+circuit test_polypass_autofill_offline_first()
+    lex polylabs/polypass
+{
+    let m = polypass_autofill_module()
+    assert(m.offline_cache_policy == OfflineCachePolicy::OfflineFirst as u8, "autofill must be offline-first")
+}

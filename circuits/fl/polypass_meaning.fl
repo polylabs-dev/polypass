@@ -1,0 +1,347 @@
+/// Spec: specs/POLYPASS_CE_APP_GRAPH_SPEC.md
+/// CE meaning layer for PolyPass — 3 meaning domains, noise filter,
+/// 2 SME panels, and the polypass_register_ce orchestrator.
+
+lex polylabs/polypass
+
+@target software
+@codegen_targets ["wasm", "rust"]
+
+import "core/intelligence/ce/meaning.fl" {
+    MeaningDomain, MeaningSignal, NoiseRule, SMEPanel, SMEPanelist,
+    CERegistration, CEState,
+    ce_register_domain, ce_register_noise_rule, ce_register_sme_panel,
+    ce_observe, ce_suppress, ce_convene_panel,
+}
+
+import "core/intelligence/ce/ssm.fl" {
+    SSMSlot, ssm_allocate_slot,
+}
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const POLYPASS_CE_LEX: string = "polylabs/polypass"
+const POLYPASS_CE_VERSION: string = "0.1.0"
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Meaning Domain 1: security/vault_health
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polypass_vault_health_domain() -> MeaningDomain
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [domain_registration]
+    meters [compute_cycles]
+{
+    MeaningDomain {
+        name: "security/vault_health",
+        lex: POLYPASS_CE_LEX,
+        description: "Vault-wide security posture from breach detection and password strength analysis",
+        signals: [
+            MeaningSignal {
+                name: "breach_alert_fired",
+                source_module: "polypass_breach",
+                severity: "critical",
+                meaning: "Credential compromised — immediate rotation required",
+            },
+            MeaningSignal {
+                name: "weak_password_pattern",
+                source_module: "polypass_encrypt",
+                severity: "warning",
+                meaning: "Repeated or low-entropy passwords across vault entries",
+            },
+            MeaningSignal {
+                name: "reused_credential_detected",
+                source_module: "polypass_encrypt",
+                severity: "warning",
+                meaning: "Same password used across multiple origins",
+            },
+            MeaningSignal {
+                name: "encryption_key_age_exceeded",
+                source_module: "polypass_platform_health",
+                severity: "warning",
+                meaning: "Key rotation overdue — age exceeds policy threshold",
+            },
+            MeaningSignal {
+                name: "vault_integrity_failure",
+                source_module: "polypass_platform_health",
+                severity: "critical",
+                meaning: "Scatter-CAS shard inconsistency or corruption detected",
+            },
+        ],
+        ssm_slot: SSMSlot { dim: 64, decay_rate: 0.98 },
+        min_observations: 500,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Meaning Domain 2: security/autofill_accuracy
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polypass_autofill_accuracy_domain() -> MeaningDomain
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [domain_registration]
+    meters [compute_cycles]
+{
+    MeaningDomain {
+        name: "security/autofill_accuracy",
+        lex: POLYPASS_CE_LEX,
+        description: "Autofill match quality and phishing detection effectiveness",
+        signals: [
+            MeaningSignal {
+                name: "autofill_match_rate",
+                source_module: "polypass_autofill",
+                severity: "info",
+                meaning: "Percentage of form fills matched correctly on first attempt",
+            },
+            MeaningSignal {
+                name: "phishing_origin_blocked",
+                source_module: "polypass_autofill",
+                severity: "critical",
+                meaning: "Homograph or redirect-based phishing attempt intercepted",
+            },
+            MeaningSignal {
+                name: "multi_credential_disambiguation",
+                source_module: "polypass_autofill",
+                severity: "info",
+                meaning: "Multiple credentials for same origin — disambiguation success rate",
+            },
+            MeaningSignal {
+                name: "totp_auto_paste_rate",
+                source_module: "polypass_totp",
+                severity: "info",
+                meaning: "TOTP codes auto-pasted vs manually copied ratio",
+            },
+        ],
+        ssm_slot: SSMSlot { dim: 64, decay_rate: 0.95 },
+        min_observations: 300,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Meaning Domain 3: security/sharing_patterns
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polypass_sharing_patterns_domain() -> MeaningDomain
+    lex polylabs/polypass
+    @status production
+    @precision B
+    observe metrics: [domain_registration]
+    meters [compute_cycles]
+{
+    MeaningDomain {
+        name: "security/sharing_patterns",
+        lex: POLYPASS_CE_LEX,
+        description: "Credential sharing behavior for governance and anomaly detection",
+        signals: [
+            MeaningSignal {
+                name: "share_token_created",
+                source_module: "polypass_share",
+                severity: "info",
+                meaning: "New credential share — recipient, scope, TTL",
+            },
+            MeaningSignal {
+                name: "share_revocation_velocity",
+                source_module: "polypass_share",
+                severity: "warning",
+                meaning: "Shares revoked within minutes of creation — possible accidental share",
+            },
+            MeaningSignal {
+                name: "expired_share_access_attempt",
+                source_module: "polypass_share",
+                severity: "warning",
+                meaning: "Recipient attempted access after token expiry",
+            },
+            MeaningSignal {
+                name: "bulk_share_event",
+                source_module: "polypass_share",
+                severity: "warning",
+                meaning: "Multiple credentials shared in single session — onboarding vs exfiltration signal",
+            },
+        ],
+        ssm_slot: SSMSlot { dim: 64, decay_rate: 0.97 },
+        min_observations: 200,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Noise Filter
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polypass_noise_filter() -> list[NoiseRule]
+    lex polylabs/polypass
+    @status production
+    @precision C
+{
+    [
+        NoiseRule {
+            event_pattern: "autofill_cache_miss",
+            source_module: "polypass_autofill",
+            action: "suppress",
+            reason: "Browser extension periodic cache refresh — no user action",
+        },
+        NoiseRule {
+            event_pattern: "browser_extension_heartbeat",
+            source_module: "polypass_autofill",
+            action: "suppress",
+            reason: "Liveness check — no security meaning",
+        },
+        NoiseRule {
+            event_pattern: "vault_sync_ack",
+            source_module: "vault_graph",
+            action: "suppress",
+            reason: "Scatter-CAS replication protocol noise",
+        },
+        NoiseRule {
+            event_pattern: "totp_generation_tick",
+            source_module: "polypass_totp",
+            action: "suppress",
+            reason: "30-second timer tick — signal only on paste/use",
+        },
+        NoiseRule {
+            event_pattern: "metering_counter_increment",
+            source_module: "polypass_metering",
+            action: "suppress",
+            reason: "Raw counter — aggregate in metering circuit, not CE",
+        },
+    ]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SME Panel 1: Vault Security Posture
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polypass_vault_security_panel() -> SMEPanel
+    lex polylabs/polypass
+    @status production
+    @precision B
+{
+    SMEPanel {
+        name: "vault_security_posture",
+        lex: POLYPASS_CE_LEX,
+        trigger_conditions: [
+            "breach_count > 0",
+            "reused_password_ratio > 0.10",
+            "weak_password_ratio > 0.15",
+            "encryption_key_age > rotation_policy_days",
+        ],
+        panelists: [
+            SMEPanelist {
+                role: "security_advocate",
+                focus: ["rotation_urgency", "attack_surface_reduction", "encryption_freshness"],
+            },
+            SMEPanelist {
+                role: "usability_advocate",
+                focus: ["user_friction", "autofill_disruption_risk", "notification_fatigue"],
+            },
+        ],
+        synthesis_mode: "risk_adjusted_recommendation",
+        output_fields: ["rotate_now", "rotate_scheduled", "rotate_deferred"],
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SME Panel 2: Credential Sharing Governance
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polypass_sharing_governance_panel() -> SMEPanel
+    lex polylabs/polypass
+    @status production
+    @precision B
+{
+    SMEPanel {
+        name: "credential_sharing_governance",
+        lex: POLYPASS_CE_LEX,
+        trigger_conditions: [
+            "bulk_share_event",
+            "share_then_revoke_pattern",
+            "expired_share_access_spike",
+        ],
+        panelists: [
+            SMEPanelist {
+                role: "governance_advocate",
+                focus: ["access_minimization", "ttl_enforcement", "revocation_completeness"],
+            },
+            SMEPanelist {
+                role: "collaboration_advocate",
+                focus: ["legitimate_onboarding", "team_credential_sharing", "friction_reduction"],
+            },
+        ],
+        synthesis_mode: "classify_and_recommend",
+        output_fields: ["event_classification", "recommended_action", "confidence"],
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CE Registration Orchestrator
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polypass_register_ce(
+    ce: CEState
+) -> CEState
+    lex polylabs/polypass
+    @status production
+    @precision B
+    @attested true
+    observe metrics: [domains_registered, panels_registered, noise_rules_registered]
+    meters [compute_cycles]
+{
+    // Register meaning domains
+    let ce = ce_register_domain(ce, polypass_vault_health_domain())
+    let ce = ce_register_domain(ce, polypass_autofill_accuracy_domain())
+    let ce = ce_register_domain(ce, polypass_sharing_patterns_domain())
+
+    // Register noise filter rules
+    let noise_rules = polypass_noise_filter()
+    for rule in noise_rules {
+        ce = ce_register_noise_rule(ce, rule)
+    }
+
+    // Register SME panels
+    let ce = ce_register_sme_panel(ce, polypass_vault_security_panel())
+    let ce = ce_register_sme_panel(ce, polypass_sharing_governance_panel())
+
+    ce
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Golden Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+circuit test_polypass_ce_domain_count()
+    lex polylabs/polypass
+{
+    let ce = CEState::new(POLYPASS_CE_LEX)
+    let ce = polypass_register_ce(ce)
+    assert(ce.domain_count == 3, "expected 3 meaning domains")
+}
+
+#[test]
+circuit test_polypass_noise_filter_count()
+    lex polylabs/polypass
+{
+    let rules = polypass_noise_filter()
+    assert(rules.len() == 5, "expected 5 noise filter rules")
+}
+
+#[test]
+circuit test_polypass_sme_panel_count()
+    lex polylabs/polypass
+{
+    let ce = CEState::new(POLYPASS_CE_LEX)
+    let ce = polypass_register_ce(ce)
+    assert(ce.panel_count == 2, "expected 2 SME panels")
+}
+
+#[test]
+circuit test_polypass_vault_health_signals()
+    lex polylabs/polypass
+{
+    let domain = polypass_vault_health_domain()
+    assert(domain.signals.len() == 5, "vault_health must have 5 signals")
+    assert(domain.ssm_slot.dim == 64, "SSM slot must be 64-dim")
+}
