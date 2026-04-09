@@ -1,13 +1,13 @@
-// Poly Pass Share Graph — Stratum graph storage + Cortex AI governance (v0.12.0)
+// Q Pass Share Graph — Stratum graph storage + Cortex AI governance (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass
+//   esn/global/org/polyqlabs/pass
 //   Sharing relationships: users, shared vaults, credentials as nodes;
 //   share permissions as typed edges with access levels.
 
-import polykit_identity
-import polykit_metering
-import polykit_governance
+import qkit_identity
+import qkit_metering
+import qkit_governance
 
 // ── Enums ───────────────────────────────────────────────────────
 
@@ -37,7 +37,7 @@ data ShareUserNode : pass v1 {
     joined_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/pass
+    govern lex global/org/polyqlabs/pass
     cortex {
         redact [email]
         obfuscate [user_id]
@@ -59,7 +59,7 @@ data SharedVaultNode : pass v1 {
     updated_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/pass
+    govern lex global/org/polyqlabs/pass
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -75,7 +75,7 @@ data SharedCredentialNode : pass v1 {
     created_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/pass
+    govern lex global/org/polyqlabs/pass
     cortex {
         redact [wrapped_key]
         obfuscate [added_by]
@@ -183,7 +183,7 @@ circuit register_share_user(
     signing_sk: bytes(4896),
 ) -> ShareUserNode
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     constant_time true
     @observe metrics: [share_users_registered]
@@ -191,7 +191,7 @@ circuit register_share_user(
     wasm_abi [eslite_insert, now]
     monitor "share_user_registration_rate" { share_users_registered < 50/s }
 {
-    let user_id = polykit_identity::derive_user_id(user_pk)
+    let user_id = qkit_identity::derive_user_id(user_pk)
     let ts = now_ns() / 1000000
 
     let user = ShareUserNode {
@@ -220,7 +220,7 @@ circuit create_shared_vault(
     signing_sk: bytes(4896),
 ) -> SharedVaultNode
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     @observe metrics: [shared_vaults_created, shared_vault_create_latency_ns]
     invariant "name_present" { len(name) > 0 }
@@ -228,7 +228,7 @@ circuit create_shared_vault(
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now, csprng]
 {
-    let owner_id = polykit_identity::derive_user_id(owner_pk)
+    let owner_id = qkit_identity::derive_user_id(owner_pk)
     let ts = now_ns() / 1000000
     let vault_seed = concat(owner_id, name, csprng(16), ts)
     let vault_id = sha3_512(vault_seed)
@@ -263,7 +263,7 @@ circuit create_shared_vault(
 
     overlay_set(share_network, vault_id, member_count, 1)
 
-    polykit_metering::record_usage(owner_id, "graph_shared_vault_create", DimensionValues {
+    qkit_metering::record_usage(owner_id, "graph_shared_vault_create", DimensionValues {
         executions: 1, hashes: 2, bandwidth: 0,
         storage: 1024, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -280,7 +280,7 @@ circuit invite_to_vault(
     signing_sk: bytes(4896),
 ) -> InvitationEdge
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     constant_time true
     @observe metrics: [vault_invitations_sent, invitation_latency_ns]
@@ -309,7 +309,7 @@ circuit invite_to_vault(
     let _sig = mldsa_sign(signing_sk, serialize(invitation))
     graph_connect(share_network, inviter_id, vault_id, invitation)
 
-    polykit_metering::record_usage(inviter_id, "graph_vault_invite", DimensionValues {
+    qkit_metering::record_usage(inviter_id, "graph_vault_invite", DimensionValues {
         executions: 1, hashes: 2, bandwidth: 1568,
         storage: 256, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -327,7 +327,7 @@ circuit accept_vault_invitation(
     signing_sk: bytes(4896),
 ) -> MemberOfEdge
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     constant_time true
     @observe metrics: [vault_invitations_accepted]
@@ -361,7 +361,7 @@ circuit accept_vault_invitation(
 
     state_transition(share_lifecycle, member_edge.edge_id, signature_verified)
 
-    polykit_metering::record_usage(user_id, "graph_vault_accept", DimensionValues {
+    qkit_metering::record_usage(user_id, "graph_vault_accept", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
     })
@@ -376,7 +376,7 @@ circuit revoke_vault_member(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     @observe metrics: [vault_members_revoked]
     invariant "vault_exists" { graph_exists(share_network, vault_id) }
@@ -396,7 +396,7 @@ circuit revoke_vault_member(
 
     eslm_feed(share_anomaly, concat("member_revoked:", vault_id, ":", member_id), 0)
 
-    polykit_metering::record_usage(revoker_id, "graph_vault_revoke", DimensionValues {
+    qkit_metering::record_usage(revoker_id, "graph_vault_revoke", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 0, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -413,7 +413,7 @@ circuit share_credential_to_vault(
     signing_sk: bytes(4896),
 ) -> SharedCredentialNode
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     constant_time true
     @observe metrics: [credentials_shared_to_vault]
@@ -457,7 +457,7 @@ circuit get_vault_members(
     vault_id: string,
 ) -> list<ShareUserNode>
     profile poly_framework_standard
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision B
     @observe metrics: [vault_member_queries]
 {
@@ -469,7 +469,7 @@ circuit get_shared_credentials(
     vault_id: string,
 ) -> list<SharedCredentialNode>
     profile poly_framework_standard
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision B
     @observe metrics: [shared_credential_queries]
 {
@@ -481,7 +481,7 @@ circuit get_user_vaults(
     user_id: string,
 ) -> list<SharedVaultNode>
     profile poly_framework_standard
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision B
     @observe metrics: [user_vault_queries]
 {
@@ -493,7 +493,7 @@ circuit snapshot_share_state(
     signing_sk: bytes(4896),
 ) -> string
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     @observe metrics: [share_snapshots]
 {

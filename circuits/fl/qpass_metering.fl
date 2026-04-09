@@ -1,8 +1,8 @@
-// Poly Pass Metering — Per-product 8D metering for Poly Pass operations (v0.12.0)
+// Q Pass Metering — Per-product 8D metering for Q Pass operations (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass/metering
-//   Isolated under polylabs.pass.metering lex namespace.
+//   esn/global/org/polyqlabs/pass/metering
+//   Isolated under polyqlabs.pass.metering lex namespace.
 //   8 dimensions: Executions, Hashes, Bandwidth, Storage, Observables, Proofs, Circuits, MpcSessions.
 //
 //  Operation                 | E | H | B | S | O | P | C | M |
@@ -17,7 +17,7 @@
 //  share_graph_write         | 1 | 1 | * | * | * | 1 |   |   |
 //  health_report             | 1 |   |   |   | * |   |   |   |
 
-import polykit_metering
+import qkit_metering
 
 // ── Enums ───────────────────────────────────────────────────────
 
@@ -42,10 +42,10 @@ data PassTierLimits : pass v1 {
     max_shares: u32,
     max_breach_checks_per_day: u32,
     max_imports_per_day: u32,
-    base_limits: polykit_metering::TierLimits,
+    base_limits: qkit_metering::TierLimits,
 }
     store kv
-    govern lex global/org/polylabs/pass/metering
+    govern lex global/org/polyqlabs/pass/metering
     cortex {
         infer on_read
     }
@@ -57,11 +57,11 @@ data PassUsageSummary : pass v1 {
     share_count: u32,
     breach_checks_today: u32,
     imports_today: u32,
-    dimensions: polykit_metering::DimensionValues,
+    dimensions: qkit_metering::DimensionValues,
     period_start: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/metering
+    govern lex global/org/polyqlabs/pass/metering
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -70,7 +70,7 @@ data PassUsageSummary : pass v1 {
 
 // ── Streams ─────────────────────────────────────────────────────
 
-stream pass_metering_events: event<polykit_metering::MeteringRecord>
+stream pass_metering_events: event<qkit_metering::MeteringRecord>
     | throttle 500/s burst 1000
     retention 365d
     consumers [observe, billing, governance]
@@ -80,16 +80,16 @@ stream pass_metering_events: event<polykit_metering::MeteringRecord>
 circuit meter_store(
     user_id: bytes(16),
     credential_bytes: u64,
-) -> polykit_metering::MeteringRecord
+) -> qkit_metering::MeteringRecord
     profile poly_framework_standard
-    lex global/org/polylabs/pass/metering
+    lex global/org/polyqlabs/pass/metering
     @precision B
     @observe metrics: [store_metering_ops]
     monitor "store_metering_rate" { store_metering_ops < 5000/s }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
-    let dims = polykit_metering::DimensionValues {
+    let dims = qkit_metering::DimensionValues {
         executions: 1,
         hashes: 1,
         bandwidth: 0,
@@ -99,20 +99,20 @@ circuit meter_store(
         circuits: 0,
         mpc_sessions: 0,
     }
-    polykit_metering::record_usage(user_id, "pass_store", dims)
+    qkit_metering::record_usage(user_id, "pass_store", dims)
 }
 
 circuit meter_autofill(
     user_id: bytes(16),
-) -> polykit_metering::MeteringRecord
+) -> qkit_metering::MeteringRecord
     profile poly_framework_standard
-    lex global/org/polylabs/pass/metering
+    lex global/org/polyqlabs/pass/metering
     @precision B
     @observe metrics: [autofill_metering_ops]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
-    let dims = polykit_metering::DimensionValues {
+    let dims = qkit_metering::DimensionValues {
         executions: 1,
         hashes: 0,
         bandwidth: 0,
@@ -122,21 +122,21 @@ circuit meter_autofill(
         circuits: 0,
         mpc_sessions: 0,
     }
-    polykit_metering::record_usage(user_id, "pass_autofill", dims)
+    qkit_metering::record_usage(user_id, "pass_autofill", dims)
 }
 
 circuit meter_share(
     user_id: bytes(16),
     wrapped_key_bytes: u64,
-) -> polykit_metering::MeteringRecord
+) -> qkit_metering::MeteringRecord
     profile poly_framework_standard
-    lex global/org/polylabs/pass/metering
+    lex global/org/polyqlabs/pass/metering
     @precision B
     @observe metrics: [share_metering_ops]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
-    let dims = polykit_metering::DimensionValues {
+    let dims = qkit_metering::DimensionValues {
         executions: 1,
         hashes: 2,
         bandwidth: wrapped_key_bytes,
@@ -146,21 +146,21 @@ circuit meter_share(
         circuits: 0,
         mpc_sessions: 0,
     }
-    polykit_metering::record_usage(user_id, "pass_share", dims)
+    qkit_metering::record_usage(user_id, "pass_share", dims)
 }
 
 circuit meter_breach_check(
     user_id: bytes(16),
     response_bytes: u64,
-) -> polykit_metering::MeteringRecord
+) -> qkit_metering::MeteringRecord
     profile poly_framework_standard
-    lex global/org/polylabs/pass/metering
+    lex global/org/polyqlabs/pass/metering
     @precision B
     @observe metrics: [breach_metering_ops]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
-    let dims = polykit_metering::DimensionValues {
+    let dims = qkit_metering::DimensionValues {
         executions: 1,
         hashes: 2,
         bandwidth: response_bytes,
@@ -170,7 +170,7 @@ circuit meter_breach_check(
         circuits: 0,
         mpc_sessions: 0,
     }
-    polykit_metering::record_usage(user_id, "pass_breach_check", dims)
+    qkit_metering::record_usage(user_id, "pass_breach_check", dims)
 }
 
 circuit check_pass_tier_limits(
@@ -180,7 +180,7 @@ circuit check_pass_tier_limits(
     current_usage: PassUsageSummary,
 ) -> list<string>
     profile poly_framework_standard
-    lex global/org/polylabs/pass/metering
+    lex global/org/polyqlabs/pass/metering
     @precision B
     @observe metrics: [tier_checks, tier_violations]
     meters [compute_cycles, memory_bytes]
@@ -203,7 +203,7 @@ circuit check_pass_tier_limits(
         violations = append(violations, "import_daily_limit")
     }
 
-    let base_violations = polykit_metering::check_limits(current_usage.dimensions, tier.base_limits)
+    let base_violations = qkit_metering::check_limits(current_usage.dimensions, tier.base_limits)
     for v in base_violations {
         if v != null {
             violations = append(violations, concat("dimension_exceeded:", v))
@@ -217,12 +217,12 @@ circuit get_pass_usage(
     user_id: bytes(16),
 ) -> PassUsageSummary
     profile poly_framework_standard
-    lex global/org/polylabs/pass/metering
+    lex global/org/polyqlabs/pass/metering
     @precision B
     @observe metrics: [usage_queries]
     wasm_abi [eslite_query, now]
 {
-    let base = polykit_metering::get_usage_summary(user_id)
+    let base = qkit_metering::get_usage_summary(user_id)
 
     PassUsageSummary {
         user_id: user_id,

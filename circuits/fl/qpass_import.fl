@@ -1,13 +1,13 @@
-// Poly Pass Import — Multi-format credential import with deduplication (v0.12.0)
+// Q Pass Import — Multi-format credential import with deduplication (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass/import
+//   esn/global/org/polyqlabs/pass/import
 //   Supports 12 formats: 1Password (CSV/1pux), Bitwarden (JSON/CSV), LastPass,
 //   Dashlane (Dash/CSV), Chrome, Firefox, Safari, KeePass, Proton Pass.
 //   Deduplication via domain+username hash matching with configurable actions.
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 // ── Enums ───────────────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ data ImportResult : pass v1 {
     import_time_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/import
+    govern lex global/org/polyqlabs/pass/import
     cortex {
         infer on_write
         on_anomaly alert "pass-team"
@@ -58,7 +58,7 @@ data DuplicateMatch : pass v1 {
     action: u8,
 }
     store kv
-    govern lex global/org/polylabs/pass/import
+    govern lex global/org/polyqlabs/pass/import
     cortex {
         obfuscate [imported_username_hash]
         infer on_write
@@ -93,7 +93,7 @@ circuit import_csv(
     signing_sk: bytes(4896),
 ) -> ImportResult
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/import
+    lex global/org/polyqlabs/pass/import
     @precision C
     constant_time true
     @observe metrics: [csv_imports, csv_rows_parsed, csv_import_latency_ms]
@@ -147,7 +147,7 @@ circuit import_csv(
 
     emit(import_events, result)
 
-    polykit_metering::record_usage(user_id, "pass_import_csv", DimensionValues {
+    qkit_metering::record_usage(user_id, "pass_import_csv", DimensionValues {
         executions: 1, hashes: imported * 2, bandwidth: 0,
         storage: imported * 512, observables: 1, proofs: imported, circuits: 0, mpc_sessions: 0,
     })
@@ -163,7 +163,7 @@ circuit import_1password(
     signing_sk: bytes(4896),
 ) -> ImportResult
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/import
+    lex global/org/polyqlabs/pass/import
     @precision C
     constant_time true
     @observe metrics: [onepassword_imports, onepassword_items_parsed]
@@ -212,7 +212,7 @@ circuit import_bitwarden(
     signing_sk: bytes(4896),
 ) -> ImportResult
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/import
+    lex global/org/polyqlabs/pass/import
     @precision C
     constant_time true
     @observe metrics: [bitwarden_imports, bitwarden_items_parsed]
@@ -256,7 +256,7 @@ circuit detect_duplicates(
     existing_credential_ids: list<bytes(16)>,
 ) -> list<DuplicateMatch>
     profile poly_framework_standard
-    lex global/org/polylabs/pass/import
+    lex global/org/polyqlabs/pass/import
     @precision B
     @observe metrics: [dedup_scans, duplicates_detected]
     invariant "existing_consistent" {
@@ -308,7 +308,7 @@ circuit merge_entries(
     signing_sk: bytes(4896),
 ) -> ImportResult
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/import
+    lex global/org/polyqlabs/pass/import
     @precision C
     constant_time true
     @observe metrics: [merge_ops, entries_merged, entries_skipped, entries_kept_both]

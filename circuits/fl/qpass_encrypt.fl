@@ -1,13 +1,13 @@
-// Poly Pass Encryption — Per-credential PQ encryption & vault key management (v0.12.0)
+// Q Pass Encryption — Per-credential PQ encryption & vault key management (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass/encrypt
+//   esn/global/org/polyqlabs/pass/encrypt
 //   AES-256-GCM per-credential encryption, ML-KEM-1024 vault key wrapping.
-//   Vault keys derived from SPARK biometric master seed via HKDF("poly-pass-v1").
+//   Vault keys derived from SPARK biometric master seed via HKDF("q-pass-v1").
 //   Key rotation re-wraps every credential under a new vault epoch.
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 // ── Aliases ─────────────────────────────────────────────────────
 
@@ -26,7 +26,7 @@ data EncryptedCredential : pass v1 {
     tag: bytes(16),
 }
     store kv
-    govern lex global/org/polylabs/pass/encrypt
+    govern lex global/org/polyqlabs/pass/encrypt
     cortex {
         redact [ciphertext, tag]
         infer on_write
@@ -39,7 +39,7 @@ data WrappedVaultKey : pass v1 {
     nonce: Nonce,
 }
     store kv
-    govern lex global/org/polylabs/pass/encrypt
+    govern lex global/org/polyqlabs/pass/encrypt
     cortex {
         redact [wrapped_key]
         infer on_write
@@ -53,7 +53,7 @@ data VaultKeyRotation : pass v1 {
     rotated_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/encrypt
+    govern lex global/org/polyqlabs/pass/encrypt
     cortex {
         infer on_write
         on_anomaly alert "pass-security"
@@ -79,7 +79,7 @@ circuit encrypt_credential(
     user_id: bytes(16),
 ) -> EncryptedCredential
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/encrypt
+    lex global/org/polyqlabs/pass/encrypt
     @precision C
     constant_time true
     @observe metrics: [encrypt_ops, encrypt_latency_ns, bytes_encrypted]
@@ -104,7 +104,7 @@ circuit encrypt_credential(
         tag: tag,
     }
 
-    polykit_metering::record_usage(user_id, "pass_encrypt", DimensionValues {
+    qkit_metering::record_usage(user_id, "pass_encrypt", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: len(ct), observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
     })
@@ -118,7 +118,7 @@ circuit decrypt_credential(
     user_id: bytes(16),
 ) -> bytes
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/encrypt
+    lex global/org/polyqlabs/pass/encrypt
     @precision C
     constant_time true
     @observe metrics: [decrypt_ops, decrypt_latency_ns, decrypt_failures]
@@ -132,7 +132,7 @@ circuit decrypt_credential(
     let cred_key = hkdf_sha3(vault_key, concat("cred-key:", encrypted.credential_id), 32)
     let plaintext = aes_gcm_decrypt(cred_key, encrypted.nonce, encrypted.ciphertext, encrypted.aad, encrypted.tag)
 
-    polykit_metering::record_usage(user_id, "pass_decrypt", DimensionValues {
+    qkit_metering::record_usage(user_id, "pass_decrypt", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 0, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
     })
@@ -145,7 +145,7 @@ circuit derive_vault_key(
     vault_epoch: u32,
 ) -> WrappedVaultKey
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/encrypt
+    lex global/org/polyqlabs/pass/encrypt
     @precision C
     constant_time true
     @observe metrics: [vault_key_derivations]
@@ -154,7 +154,7 @@ circuit derive_vault_key(
     meters [compute_cycles, memory_bytes]
     wasm_abi [csprng]
 {
-    let keys = polykit_identity::derive_keys(master_seed, "poly-pass-v1")
+    let keys = qkit_identity::derive_keys(master_seed, "q-pass-v1")
     let vault_key = hkdf_sha3(master_seed, concat("vault-key:epoch:", vault_epoch), 32)
     let wrap_nonce = csprng(12)
     let kem = mlkem_encaps(keys.encryption_public_key)
@@ -178,7 +178,7 @@ circuit rotate_vault_key(
     signing_sk: bytes(4896),
 ) -> VaultKeyRotation
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/encrypt
+    lex global/org/polyqlabs/pass/encrypt
     @precision C
     constant_time true
     @observe metrics: [key_rotations, credentials_rewrapped, rotation_latency_ns]
@@ -210,7 +210,7 @@ circuit rotate_vault_key(
     let _sig = mldsa_sign(signing_sk, serialize(rotation))
     emit(key_rotation_events, rotation)
 
-    polykit_metering::record_usage(user_id, "pass_key_rotate", DimensionValues {
+    qkit_metering::record_usage(user_id, "pass_key_rotate", DimensionValues {
         executions: 1, hashes: count + 2, bandwidth: 0,
         storage: count * 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })

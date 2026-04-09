@@ -1,12 +1,12 @@
-# Poly Pass - GitHub Issues
+# Q Pass - GitHub Issues
 
-> GitHub org: [polylabs-dev](https://github.com/polylabs-dev) | Domain: [polylabs.dev](https://polylabs.dev)
+> GitHub org: [polylabs-dev](https://github.com/polylabs-dev) | Domain: [polyqlabs.dev](https://polyqlabs.dev)
 
-## Epic 01: Poly Pass Core
+## Epic 01: Q Pass Core
 
 | # | Issue | Status | Priority |
 |---|-------|--------|----------|
-| 001 | Scaffold poly-pass-core Rust crate | Open | P0 |
+| 001 | Scaffold q-pass-core Rust crate | Open | P0 |
 | 002 | Vault encryption (per-item ML-KEM-1024) | Open | P0 |
 | 003 | SPARK biometric vault unlock (no master password) | Open | P0 |
 | 004 | Design FLIR vault sync circuit | Open | P0 |
@@ -15,7 +15,7 @@
 | 007 | Tauri desktop app | Open | P0 |
 | 008 | Browser extension with autofill (Chrome, Firefox, Safari) | Open | P0 |
 
-## Epic 02: Poly Pass Features
+## Epic 02: Q Pass Features
 
 | # | Issue | Status | Priority |
 |---|-------|--------|----------|
@@ -26,12 +26,12 @@
 | 013 | Import from 1Password, Bitwarden, LastPass, etc. | Open | P1 |
 | 014 | Family/friend sharing | Open | P1 |
 
-## Epic 03: Poly Pass Mobile + Enterprise
+## Epic 03: Q Pass Mobile + Enterprise
 
 | # | Issue | Status | Priority |
 |---|-------|--------|----------|
 | 015 | iOS app (AutoFill Credential Provider) | Open | P1 |
 | 016 | Android app (Autofill Framework) | Open | P1 |
-| 017 | Poly OAuth SSO integration (enterprise) | Open | P1 |
+| 017 | Q OAuth SSO integration (enterprise) | Open | P1 |
 | 018 | Team vaults and enterprise admin | Open | P2 |
-| 019 | Poly Vault HSM integration (master key in hardware) | Open | P2 |
+| 019 | Q Vault HSM integration (master key in hardware) | Open | P2 |

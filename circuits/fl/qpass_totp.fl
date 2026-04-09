@@ -1,14 +1,14 @@
-// Poly Pass TOTP/HOTP — Time-based and counter-based OTP generation (v0.12.0)
+// Q Pass TOTP/HOTP — Time-based and counter-based OTP generation (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass/totp
+//   esn/global/org/polyqlabs/pass/totp
 //   TOTP per RFC 6238 (time-based) and HOTP per RFC 4226 (counter-based).
 //   Seeds stored encrypted in vault; codes generated on-device only.
 //   Supports 6/8 digit codes, SHA-1/SHA-256/SHA-512 algorithms,
 //   30s/60s time steps, and configurable counter windows.
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 // ── Enums ───────────────────────────────────────────────────────
 
@@ -36,7 +36,7 @@ data TotpConfig : pass v1 {
     created_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/totp
+    govern lex global/org/polyqlabs/pass/totp
     cortex {
         redact [encrypted_seed]
         infer on_write
@@ -54,7 +54,7 @@ data HotpConfig : pass v1 {
     created_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/totp
+    govern lex global/org/polyqlabs/pass/totp
     cortex {
         redact [encrypted_seed]
         infer on_write
@@ -69,7 +69,7 @@ data OtpCode : pass v1 {
     otp_type: u8,
 }
     store kv
-    govern lex global/org/polylabs/pass/totp
+    govern lex global/org/polyqlabs/pass/totp
     cortex {
         redact [code]
         infer on_write
@@ -82,7 +82,7 @@ data TotpVerifyResult : pass v1 {
     verified_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/totp
+    govern lex global/org/polyqlabs/pass/totp
     cortex {
         infer on_write
         on_anomaly alert "pass-security"
@@ -106,7 +106,7 @@ circuit generate_totp(
     current_time_ms: u64,
 ) -> OtpCode
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/totp
+    lex global/org/polyqlabs/pass/totp
     @precision C
     constant_time true
     @observe metrics: [totp_generations, totp_latency_ns]
@@ -146,7 +146,7 @@ circuit generate_hotp(
     vault_key: bytes(32),
 ) -> OtpCode
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/totp
+    lex global/org/polyqlabs/pass/totp
     @precision C
     constant_time true
     @observe metrics: [hotp_generations, hotp_latency_ns]
@@ -197,7 +197,7 @@ circuit verify_totp(
     window_size: u32,
 ) -> TotpVerifyResult
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/totp
+    lex global/org/polyqlabs/pass/totp
     @precision C
     constant_time true
     @observe metrics: [totp_verifications, totp_verify_successes, totp_verify_failures]
@@ -254,7 +254,7 @@ circuit register_totp(
     user_id: bytes(16),
 ) -> TotpConfig
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/totp
+    lex global/org/polyqlabs/pass/totp
     @precision C
     constant_time true
     @observe metrics: [totp_registrations]
@@ -282,7 +282,7 @@ circuit register_totp(
 
     eslite_insert("totp_configs", credential_id, config)
 
-    polykit_metering::record_usage(user_id, "pass_totp_register", DimensionValues {
+    qkit_metering::record_usage(user_id, "pass_totp_register", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
     })
@@ -294,7 +294,7 @@ circuit parse_totp_uri(
     otpauth_uri: string,
 ) -> option<TotpConfig>
     profile poly_framework_standard
-    lex global/org/polylabs/pass/totp
+    lex global/org/polyqlabs/pass/totp
     @precision B
     @observe metrics: [uri_parses, uri_parse_failures]
     invariant "uri_scheme" { starts_with(otpauth_uri, "otpauth://totp/") or starts_with(otpauth_uri, "otpauth://hotp/") }
@@ -333,7 +333,7 @@ circuit decrypt_totp_seed(
     vault_key: bytes(32),
 ) -> bytes
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/totp
+    lex global/org/polyqlabs/pass/totp
     @precision C
     constant_time true
 {
@@ -347,7 +347,7 @@ circuit encrypt_totp_seed(
     vault_key: bytes(32),
 ) -> bytes
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/totp
+    lex global/org/polyqlabs/pass/totp
     @precision C
     constant_time true
     wasm_abi [csprng]

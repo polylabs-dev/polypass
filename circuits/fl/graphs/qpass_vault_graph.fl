@@ -1,13 +1,13 @@
-// Poly Pass Vault Graph — Stratum graph storage + Cortex AI governance (v0.12.0)
+// Q Pass Vault Graph — Stratum graph storage + Cortex AI governance (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass
+//   esn/global/org/polyqlabs/pass
 //   Credential vault modeled as typed graph with overlays for breach status,
 //   password age, strength score, autofill frequency, and usage recency.
 
-import polykit_identity
-import polykit_metering
-import polykit_governance
+import qkit_identity
+import qkit_metering
+import qkit_governance
 
 // ── Enums ───────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ data CredentialNode : pass v1 {
     updated_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/pass
+    govern lex global/org/polyqlabs/pass
     cortex {
         redact [password_encrypted, notes_encrypted, totp_seed]
         obfuscate [user_id, url_domain]
@@ -61,7 +61,7 @@ data FolderNode : pass v1 {
     updated_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/pass
+    govern lex global/org/polyqlabs/pass
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -75,7 +75,7 @@ data TagNode : pass v1 {
     created_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/pass
+    govern lex global/org/polyqlabs/pass
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -174,7 +174,7 @@ circuit create_credential(
     signing_sk: bytes(4896),
 ) -> CredentialNode
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     constant_time true
     @observe metrics: [credentials_created, credential_create_latency_ns]
@@ -185,7 +185,7 @@ circuit create_credential(
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now, csprng]
 {
-    let user_id = polykit_identity::derive_user_id(user_pk)
+    let user_id = qkit_identity::derive_user_id(user_pk)
     let ts = now_ns() / 1000000
     let cred_seed = concat(user_id, url_domain, csprng(16), ts)
     let credential_id = sha3_512(cred_seed)
@@ -214,7 +214,7 @@ circuit create_credential(
     overlay_set(vault_registry, credential_id, last_used_ns, ts * 1000000)
     overlay_set(vault_registry, credential_id, autofill_count, 0)
 
-    polykit_metering::record_usage(user_id, "graph_credential_create", DimensionValues {
+    qkit_metering::record_usage(user_id, "graph_credential_create", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 1024, observables: 5, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -233,7 +233,7 @@ circuit update_credential(
     signing_sk: bytes(4896),
 ) -> CredentialNode
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     constant_time true
     @observe metrics: [credentials_updated, credential_update_latency_ns]
@@ -277,7 +277,7 @@ circuit update_credential(
     let _sig = mldsa_sign(signing_sk, serialize(updated))
     graph_update(vault_registry, updated)
 
-    polykit_metering::record_usage(user_id, "graph_credential_update", DimensionValues {
+    qkit_metering::record_usage(user_id, "graph_credential_update", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 512, observables: 2, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -291,7 +291,7 @@ circuit delete_credential(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     @observe metrics: [credentials_deleted]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
@@ -331,14 +331,14 @@ circuit create_folder(
     signing_sk: bytes(4896),
 ) -> FolderNode
     profile poly_framework_standard
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     @observe metrics: [folders_created]
     invariant "name_present" { len(name) > 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now, csprng]
 {
-    let user_id = polykit_identity::derive_user_id(user_pk)
+    let user_id = qkit_identity::derive_user_id(user_pk)
     let ts = now_ns() / 1000000
     let folder_id = sha3_512(concat(user_id, name, csprng(16), ts))
 
@@ -376,7 +376,7 @@ circuit move_credential(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_standard
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     @observe metrics: [credentials_moved]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
@@ -409,7 +409,7 @@ circuit record_autofill(
     user_id: string,
 ) -> bool
     profile poly_framework_standard
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision B
     @observe metrics: [autofill_records]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
@@ -427,7 +427,7 @@ circuit update_breach_status(
     user_id: string,
 ) -> bool
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     @observe metrics: [breach_status_updates, breaches_flagged]
     invariant "cred_exists" { graph_exists(vault_registry, credential_id) }
@@ -451,7 +451,7 @@ circuit get_credential(
     credential_id: string,
 ) -> option<CredentialNode>
     profile poly_framework_standard
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision B
     @observe metrics: [credential_queries]
 {
@@ -463,7 +463,7 @@ circuit get_credentials_for_user(
     user_id: string,
 ) -> list<CredentialNode>
     profile poly_framework_standard
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision B
     @observe metrics: [user_credential_queries, credentials_returned]
 {
@@ -475,7 +475,7 @@ circuit get_folders_for_user(
     user_id: string,
 ) -> list<FolderNode>
     profile poly_framework_standard
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision B
     @observe metrics: [folder_queries]
 {
@@ -487,7 +487,7 @@ circuit snapshot_vault_state(
     signing_sk: bytes(4896),
 ) -> string
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass
+    lex global/org/polyqlabs/pass
     @precision C
     @observe metrics: [vault_snapshots, snapshot_size_bytes]
 {

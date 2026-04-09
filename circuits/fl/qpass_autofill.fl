@@ -1,13 +1,13 @@
-// Poly Pass Autofill — URL matching, form detection, and credential fill (v0.12.0)
+// Q Pass Autofill — URL matching, form detection, and credential fill (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass/autofill
+//   esn/global/org/polyqlabs/pass/autofill
 //   Fuzzy URL matching with domain equivalence and form field mapping.
 //   Scores: ExactDomain (1000), Equivalent (900), Subdomain (800), Fuzzy (500).
 //   DOM-based autofill via WASM browser extension bridge.
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 // ── Value Types ─────────────────────────────────────────────────
 
@@ -39,7 +39,7 @@ data AutofillMatch : pass v1 {
     has_passkey: bool,
 }
     store kv
-    govern lex global/org/polylabs/pass/autofill
+    govern lex global/org/polyqlabs/pass/autofill
     cortex {
         obfuscate [username_hash]
         infer on_write
@@ -52,7 +52,7 @@ data AutofillResult : pass v1 {
     fill_latency_ns: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/autofill
+    govern lex global/org/polyqlabs/pass/autofill
     cortex {
         infer on_write
     }
@@ -66,7 +66,7 @@ data SaveCandidate : pass v1 {
     existing_credential_id: option<bytes(16)>,
 }
     store kv
-    govern lex global/org/polylabs/pass/autofill
+    govern lex global/org/polyqlabs/pass/autofill
     cortex {
         redact [password_encrypted]
         infer on_write
@@ -109,7 +109,7 @@ circuit match_url(
     passkey_flags: list<bool>,
 ) -> list<AutofillMatch>
     profile poly_framework_standard
-    lex global/org/polylabs/pass/autofill
+    lex global/org/polyqlabs/pass/autofill
     @precision B
     @observe metrics: [url_matches, match_latency_ns, fuzzy_match_count]
     monitor "match_latency" { match_latency_ns < 5000000 }
@@ -167,7 +167,7 @@ circuit autofill_form(
     totp_code: option<string>,
 ) -> AutofillResult
     profile poly_framework_standard
-    lex global/org/polylabs/pass/autofill
+    lex global/org/polyqlabs/pass/autofill
     @precision B
     @observe metrics: [autofill_ops, fields_filled, autofill_latency_ns]
     monitor "autofill_latency" { autofill_latency_ns < 10000000 }
@@ -210,7 +210,7 @@ circuit suggest_credentials(
     passkey_flags: list<bool>,
 ) -> list<AutofillMatch>
     profile poly_framework_standard
-    lex global/org/polylabs/pass/autofill
+    lex global/org/polyqlabs/pass/autofill
     @precision B
     @observe metrics: [suggest_ops, suggestions_returned]
     meters [compute_cycles, memory_bytes]
@@ -235,7 +235,7 @@ circuit save_from_form(
     signing_sk: bytes(4896),
 ) -> bytes(16)
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/autofill
+    lex global/org/polyqlabs/pass/autofill
     @precision C
     constant_time true
     @observe metrics: [save_ops, save_update_ops, save_new_ops]
@@ -256,7 +256,7 @@ circuit save_from_form(
 
     let _sig = mldsa_sign(signing_sk, concat(credential_id, sha3_512(candidate.url)))
 
-    polykit_metering::record_usage(user_id, "pass_autofill_save", DimensionValues {
+    qkit_metering::record_usage(user_id, "pass_autofill_save", DimensionValues {
         executions: 1, hashes: 2, bandwidth: 0,
         storage: 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })

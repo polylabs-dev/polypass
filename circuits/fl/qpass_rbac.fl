@@ -1,9 +1,9 @@
-// Poly Pass RBAC — Role-based access control graph for enterprise vaults (v0.12.0)
+// Q Pass RBAC — Role-based access control graph for enterprise vaults (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass/rbac
+//   esn/global/org/polyqlabs/pass/rbac
 //   Fine-grained RBAC with bitmask permissions, role inheritance, expiry,
-//   and audit trail. Integrates with Poly OAuth for enterprise SSO.
+//   and audit trail. Integrates with Q OAuth for enterprise SSO.
 //   Supports org hierarchy, vault-level ACLs, and credential-level overrides.
 //
 // Permission bitmask:
@@ -16,9 +16,9 @@
 //   0x40 AUDIT         — view audit logs
 //   0x80 EXPORT        — export vault contents
 
-import polykit_identity
-import polykit_metering
-import polykit_governance
+import qkit_identity
+import qkit_metering
+import qkit_governance
 
 // ── Enums ───────────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ data RoleNode : pass v1 {
     updated_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/pass/rbac
+    govern lex global/org/polyqlabs/pass/rbac
     cortex {
         infer on_write
         on_anomaly alert "pass-security"
@@ -71,7 +71,7 @@ data PrincipalNode : pass v1 {
     created_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/pass/rbac
+    govern lex global/org/polyqlabs/pass/rbac
     cortex {
         obfuscate [principal_id, email_hash]
         infer on_write
@@ -90,7 +90,7 @@ data OrgNode : pass v1 {
     created_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/pass/rbac
+    govern lex global/org/polyqlabs/pass/rbac
     cortex {
         infer on_write
         on_anomaly alert "pass-team"
@@ -108,7 +108,7 @@ data RbacAuditEntry : pass v1 {
     timestamp: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/rbac
+    govern lex global/org/polyqlabs/pass/rbac
     cortex {
         obfuscate [principal_id]
         infer on_write
@@ -209,7 +209,7 @@ circuit create_role(
     signing_sk: bytes(4896),
 ) -> RoleNode
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/rbac
+    lex global/org/polyqlabs/pass/rbac
     @precision C
     @observe metrics: [roles_created]
     invariant "name_present" { len(name) > 0 }
@@ -218,7 +218,7 @@ circuit create_role(
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now, csprng]
 {
-    let admin_id = polykit_identity::derive_user_id(admin_pk)
+    let admin_id = qkit_identity::derive_user_id(admin_pk)
     let ts = now_ns() / 1000000
     let role_id = sha3_512(concat(org_id, name, csprng(16), ts))
 
@@ -260,7 +260,7 @@ circuit assign_role(
     signing_sk: bytes(4896),
 ) -> HasRoleEdge
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/rbac
+    lex global/org/polyqlabs/pass/rbac
     @precision C
     @observe metrics: [role_assignments, role_assignment_latency_ns]
     invariant "role_exists" { graph_exists(rbac_graph, role_id) }
@@ -289,7 +289,7 @@ circuit assign_role(
 
     emit(rbac_grant_events, edge)
 
-    polykit_metering::record_usage(admin_id, "rbac_assign_role", DimensionValues {
+    qkit_metering::record_usage(admin_id, "rbac_assign_role", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 256, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -305,7 +305,7 @@ circuit revoke_role(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/rbac
+    lex global/org/polyqlabs/pass/rbac
     @precision C
     @observe metrics: [role_revocations]
     invariant "assignment_exists" { graph_edge_exists(rbac_graph, principal_id, role_id, HasRoleEdge) }
@@ -354,7 +354,7 @@ circuit check_access(
     vault_scope: string,
 ) -> RbacDecision
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/rbac
+    lex global/org/polyqlabs/pass/rbac
     @precision C
     constant_time true
     @observe metrics: [access_checks, access_allowed, access_denied, access_escalated]
@@ -436,7 +436,7 @@ circuit resolve_effective_mask(
     role: RoleNode,
 ) -> u64
     profile poly_framework_standard
-    lex global/org/polylabs/pass/rbac
+    lex global/org/polyqlabs/pass/rbac
     @precision B
 {
     let mask = role.permission_mask
@@ -453,7 +453,7 @@ circuit get_principal_roles(
     principal_id: string,
 ) -> list<RoleNode>
     profile poly_framework_standard
-    lex global/org/polylabs/pass/rbac
+    lex global/org/polyqlabs/pass/rbac
     @precision B
     @observe metrics: [role_queries]
 {
@@ -475,7 +475,7 @@ circuit get_org_members(
     org_id: string,
 ) -> list<PrincipalNode>
     profile poly_framework_standard
-    lex global/org/polylabs/pass/rbac
+    lex global/org/polyqlabs/pass/rbac
     @precision B
     @observe metrics: [org_member_queries]
 {
@@ -490,7 +490,7 @@ circuit create_default_roles(
     signing_sk: bytes(4896),
 ) -> list<RoleNode>
     profile poly_framework_standard
-    lex global/org/polylabs/pass/rbac
+    lex global/org/polyqlabs/pass/rbac
     @precision C
     @observe metrics: [default_role_sets_created]
     meters [compute_cycles, memory_bytes]

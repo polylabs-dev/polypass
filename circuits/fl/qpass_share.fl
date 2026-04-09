@@ -1,12 +1,12 @@
-// Poly Pass Share — Credential sharing with ML-KEM-1024 key re-wrapping (v0.12.0)
+// Q Pass Share — Credential sharing with ML-KEM-1024 key re-wrapping (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass/share
+//   esn/global/org/polyqlabs/pass/share
 //   Per-recipient key wrapping via ML-KEM-1024 encapsulation.
 //   Shared vaults with member limits. Revocation with PQ-signed proofs.
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 // ── Data Declarations (Stratum + Cortex) ────────────────────────
 
@@ -22,7 +22,7 @@ data ShareInvitation : pass v1 {
     created_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/share
+    govern lex global/org/polyqlabs/pass/share
     cortex {
         redact [wrapped_key, signature]
         obfuscate [sender_id]
@@ -40,7 +40,7 @@ data SharedCredential : pass v1 {
     shared_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/share
+    govern lex global/org/polyqlabs/pass/share
     cortex {
         redact [wrapped_key]
         obfuscate [owner_id, recipient_id]
@@ -57,7 +57,7 @@ data SharedVault : pass v1 {
     created_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/share
+    govern lex global/org/polyqlabs/pass/share
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -71,7 +71,7 @@ data RewrapResult : pass v1 {
     rewrapped_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/share
+    govern lex global/org/polyqlabs/pass/share
     cortex {
         redact [new_wrapped_key]
         infer on_write
@@ -114,7 +114,7 @@ circuit share_credential(
     signing_sk: bytes(4896),
 ) -> ShareInvitation
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/share
+    lex global/org/polyqlabs/pass/share
     @precision C
     constant_time true
     @observe metrics: [shares_created, share_latency_ns]
@@ -151,7 +151,7 @@ circuit share_credential(
 
     emit(share_invitations, invitation)
 
-    polykit_metering::record_usage(sender_id, "pass_share_create", DimensionValues {
+    qkit_metering::record_usage(sender_id, "pass_share_create", DimensionValues {
         executions: 1, hashes: 2, bandwidth: 1568,
         storage: 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -166,7 +166,7 @@ circuit accept_share(
     sender_pubkey: bytes(2592),
 ) -> SharedCredential
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/share
+    lex global/org/polyqlabs/pass/share
     @precision C
     constant_time true
     @observe metrics: [shares_accepted, accept_latency_ns, accept_failures]
@@ -197,7 +197,7 @@ circuit accept_share(
 
     emit(share_events, shared)
 
-    polykit_metering::record_usage(recipient_id, "pass_share_accept", DimensionValues {
+    qkit_metering::record_usage(recipient_id, "pass_share_accept", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
     })
@@ -212,7 +212,7 @@ circuit revoke_share(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/share
+    lex global/org/polyqlabs/pass/share
     @precision C
     constant_time true
     @observe metrics: [shares_revoked, revoke_latency_ns]
@@ -235,7 +235,7 @@ circuit revoke_share(
 
     emit(share_events, revoked)
 
-    polykit_metering::record_usage(sender_id, "pass_share_revoke", DimensionValues {
+    qkit_metering::record_usage(sender_id, "pass_share_revoke", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 0, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -250,7 +250,7 @@ circuit create_shared_vault(
     signing_sk: bytes(4896),
 ) -> SharedVault
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/share
+    lex global/org/polyqlabs/pass/share
     @precision C
     @observe metrics: [shared_vaults_created]
     invariant "name_present" { len(name) > 0 }
@@ -272,7 +272,7 @@ circuit create_shared_vault(
 
     let _sig = mldsa_sign(signing_sk, serialize(vault))
 
-    polykit_metering::record_usage(owner_id, "pass_vault_create", DimensionValues {
+    qkit_metering::record_usage(owner_id, "pass_vault_create", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -288,7 +288,7 @@ circuit rewrap_for_recipient(
     sender_id: bytes(16),
 ) -> RewrapResult
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/share
+    lex global/org/polyqlabs/pass/share
     @precision C
     constant_time true
     @observe metrics: [rewrap_ops, rewrap_latency_ns]

@@ -1,6 +1,6 @@
-//! Poly Pass Journey Tests
+//! Q Pass Journey Tests
 //!
-//! End-to-end journey for Poly Pass: vault creation, credential storage,
+//! End-to-end journey for Q Pass: vault creation, credential storage,
 //! secure sharing, revocation, breach checking, encryption verification,
 //! and blind telemetry — following the eStream Convoy pattern.
 
@@ -16,7 +16,7 @@ pub struct PolypassJourney;
 
 impl Journey for PolypassJourney {
     fn name(&self) -> &str {
-        "polypass_e2e"
+        "qpass_e2e"
     }
 
     fn description(&self) -> &str {
@@ -26,13 +26,13 @@ impl Journey for PolypassJourney {
     fn parties(&self) -> Vec<JourneyParty> {
         vec![
             JourneyParty::new("alice")
-                .with_spark_context("poly-pass-v1")
+                .with_spark_context("q-pass-v1")
                 .with_role("vault_owner"),
             JourneyParty::new("bob")
-                .with_spark_context("poly-pass-v1")
+                .with_spark_context("q-pass-v1")
                 .with_role("share_recipient"),
             JourneyParty::new("breach_sentinel")
-                .with_spark_context("poly-pass-v1")
+                .with_spark_context("q-pass-v1")
                 .with_role("breach_monitor"),
         ]
     }
@@ -43,9 +43,9 @@ impl Journey for PolypassJourney {
             JourneyStep::new("alice_creates_vault")
                 .party("alice")
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
-                    let master_key = ctx.derive_spark_key("poly-pass-v1", "vault_master");
+                    let master_key = ctx.derive_spark_key("q-pass-v1", "vault_master");
 
-                    let vault = ctx.polypass().create_vault(
+                    let vault = ctx.qpass().create_vault(
                         "personal",
                         &master_key,
                     )?;
@@ -57,12 +57,12 @@ impl Journey for PolypassJourney {
                     assert!(vault.encrypted);
                     assert_eq!(vault.kdf, "argon2id");
 
-                    assert_metric_emitted!(ctx, "polypass.vault.created", {
+                    assert_metric_emitted!(ctx, "qpass.vault.created", {
                         "encryption" => "aes256gcm",
                         "kdf" => "argon2id",
                     });
 
-                    assert_povc_witness!(ctx, "polypass.vault.create", {
+                    assert_povc_witness!(ctx, "qpass.vault.create", {
                         witness_type: "vault_genesis",
                         vault_id: &vault.vault_id,
                     });
@@ -78,7 +78,7 @@ impl Journey for PolypassJourney {
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
                     let vault_id = ctx.get::<String>("vault_id");
 
-                    let credential = ctx.polypass().store_credential(
+                    let credential = ctx.qpass().store_credential(
                         &vault_id,
                         "github.com",
                         "alice@example.com",
@@ -92,17 +92,17 @@ impl Journey for PolypassJourney {
                     assert!(credential.password_encrypted);
                     assert!(credential.totp_encrypted);
 
-                    assert_metric_emitted!(ctx, "polypass.credential.stored", {
+                    assert_metric_emitted!(ctx, "qpass.credential.stored", {
                         "has_totp" => "true",
                         "site_domain" => "github.com",
                     });
 
-                    assert_blinded!(ctx, "polypass.credential.stored", {
+                    assert_blinded!(ctx, "qpass.credential.stored", {
                         field: "password",
                         blinding: "absent",
                     });
 
-                    assert_blinded!(ctx, "polypass.credential.stored", {
+                    assert_blinded!(ctx, "qpass.credential.stored", {
                         field: "username",
                         blinding: "hmac_sha3",
                     });
@@ -119,7 +119,7 @@ impl Journey for PolypassJourney {
                     let credential_id = ctx.get::<String>("credential_id");
                     let alice_id = ctx.party_id("alice");
 
-                    let share = ctx.polypass().accept_share(
+                    let share = ctx.qpass().accept_share(
                         &alice_id,
                         &credential_id,
                         &["read"],
@@ -130,21 +130,21 @@ impl Journey for PolypassJourney {
                     assert_eq!(share.permissions, vec!["read"]);
                     assert!(share.expiry_secs > 0);
 
-                    let retrieved = ctx.polypass().get_credential(&credential_id)?;
+                    let retrieved = ctx.qpass().get_credential(&credential_id)?;
                     assert_eq!(retrieved.site, "github.com");
                     assert!(retrieved.password_decryptable);
 
-                    assert_metric_emitted!(ctx, "polypass.share.accepted", {
+                    assert_metric_emitted!(ctx, "qpass.share.accepted", {
                         "permission_level" => "read",
                         "time_limited" => "true",
                     });
 
-                    assert_blinded!(ctx, "polypass.share.accepted", {
+                    assert_blinded!(ctx, "qpass.share.accepted", {
                         field: "recipient_id",
                         blinding: "hmac_sha3",
                     });
 
-                    assert_povc_witness!(ctx, "polypass.share", {
+                    assert_povc_witness!(ctx, "qpass.share", {
                         witness_type: "credential_share",
                         credential_id: &credential_id,
                     });
@@ -161,7 +161,7 @@ impl Journey for PolypassJourney {
                     let credential_id = ctx.get::<String>("credential_id");
                     let bob_id = ctx.party_id("bob");
 
-                    let revoke = ctx.polypass().revoke_share(
+                    let revoke = ctx.qpass().revoke_share(
                         &credential_id,
                         &bob_id,
                     )?;
@@ -170,14 +170,14 @@ impl Journey for PolypassJourney {
                     assert!(revoke.re_encrypted);
 
                     let bob_ctx = ctx.as_party("bob");
-                    let access_attempt = bob_ctx.polypass().get_credential(&credential_id);
+                    let access_attempt = bob_ctx.qpass().get_credential(&credential_id);
                     assert!(access_attempt.is_err());
 
-                    assert_metric_emitted!(ctx, "polypass.share.revoked", {
+                    assert_metric_emitted!(ctx, "qpass.share.revoked", {
                         "re_encrypted" => "true",
                     });
 
-                    assert_povc_witness!(ctx, "polypass.revoke", {
+                    assert_povc_witness!(ctx, "qpass.revoke", {
                         witness_type: "share_revocation",
                         credential_id: &credential_id,
                     });
@@ -193,7 +193,7 @@ impl Journey for PolypassJourney {
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
                     let vault_id = ctx.get::<String>("vault_id");
 
-                    let report = ctx.polypass().run_breach_check(
+                    let report = ctx.qpass().run_breach_check(
                         &vault_id,
                         "hibp_k_anon", // k-anonymity based, no plaintext leaves device
                     )?;
@@ -203,22 +203,22 @@ impl Journey for PolypassJourney {
                     assert!(!report.plaintext_leaked);
                     assert_eq!(report.credentials_checked, 1);
 
-                    assert_metric_emitted!(ctx, "polypass.breach.check_complete", {
+                    assert_metric_emitted!(ctx, "qpass.breach.check_complete", {
                         "method" => "hibp_k_anon",
                         "credentials_checked" => "1",
                     });
 
-                    assert_blinded!(ctx, "polypass.breach.check_complete", {
+                    assert_blinded!(ctx, "qpass.breach.check_complete", {
                         field: "vault_id",
                         blinding: "hmac_sha3",
                     });
 
-                    assert_blinded!(ctx, "polypass.breach.check_complete", {
+                    assert_blinded!(ctx, "qpass.breach.check_complete", {
                         field: "password_hash",
                         blinding: "k_anonymity_prefix",
                     });
 
-                    assert_povc_witness!(ctx, "polypass.breach_check", {
+                    assert_povc_witness!(ctx, "qpass.breach_check", {
                         witness_type: "breach_scan",
                         vault_id: &vault_id,
                     });
@@ -247,10 +247,10 @@ impl Journey for PolypassJourney {
                     assert!(merkle.series_count >= 1);
 
                     let cortex = CortexVisibility::new(ctx);
-                    cortex.assert_redacted("polypass.vault", RedactPolicy::ContentFields)?;
-                    cortex.assert_obfuscated("polypass.vault", ObfuscatePolicy::PartyIdentifiers)?;
+                    cortex.assert_redacted("qpass.vault", RedactPolicy::ContentFields)?;
+                    cortex.assert_obfuscated("qpass.vault", ObfuscatePolicy::PartyIdentifiers)?;
 
-                    assert_metric_emitted!(ctx, "polypass.stratum.verified", {
+                    assert_metric_emitted!(ctx, "qpass.stratum.verified", {
                         "csr_tier" => "hot",
                         "chain_intact" => "true",
                         "encrypted_at_rest" => "true",
@@ -265,7 +265,7 @@ impl Journey for PolypassJourney {
                 .party("alice")
                 .depends_on(&["verify_vault_encryption"])
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
-                    let telemetry = ctx.streamsight().drain_telemetry("poly-pass-v1");
+                    let telemetry = ctx.streamsight().drain_telemetry("q-pass-v1");
 
                     for event in &telemetry {
                         assert_blinded!(ctx, &event.event_type, {
@@ -285,8 +285,8 @@ impl Journey for PolypassJourney {
                     }
 
                     let cortex = CortexVisibility::new(ctx);
-                    cortex.assert_redacted("polypass", RedactPolicy::ContentFields)?;
-                    cortex.assert_obfuscated("polypass", ObfuscatePolicy::PartyIdentifiers)?;
+                    cortex.assert_redacted("qpass", RedactPolicy::ContentFields)?;
+                    cortex.assert_obfuscated("qpass", ObfuscatePolicy::PartyIdentifiers)?;
 
                     assert!(telemetry.len() >= 6, "Expected at least 6 telemetry events");
 
@@ -296,8 +296,8 @@ impl Journey for PolypassJourney {
                         .collect();
                     for ns in &namespaces {
                         assert!(
-                            ns.starts_with("poly-pass-v1"),
-                            "Telemetry must stay within poly-pass-v1 namespace, found: {}",
+                            ns.starts_with("q-pass-v1"),
+                            "Telemetry must stay within q-pass-v1 namespace, found: {}",
                             ns,
                         );
                     }
@@ -311,16 +311,16 @@ impl Journey for PolypassJourney {
     fn metrics(&self) -> JourneyMetrics {
         JourneyMetrics {
             expected_events: vec![
-                "polypass.vault.created",
-                "polypass.credential.stored",
-                "polypass.share.accepted",
-                "polypass.share.revoked",
-                "polypass.breach.check_complete",
-                "polypass.stratum.verified",
+                "qpass.vault.created",
+                "qpass.credential.stored",
+                "qpass.share.accepted",
+                "qpass.share.revoked",
+                "qpass.breach.check_complete",
+                "qpass.stratum.verified",
             ],
             max_duration_ms: 75_000,
             required_povc_witnesses: 5,
-            lex_namespace: "poly-pass-v1",
+            lex_namespace: "q-pass-v1",
         }
     }
 }
@@ -331,9 +331,9 @@ mod tests {
     use estream_test::convoy::ConvoyRunner;
 
     #[tokio::test]
-    async fn run_polypass_journey() {
+    async fn run_qpass_journey() {
         let runner = ConvoyRunner::new()
-            .with_streamsight("poly-pass-v1")
+            .with_streamsight("q-pass-v1")
             .with_stratum()
             .with_cortex();
 

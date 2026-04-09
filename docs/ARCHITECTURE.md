@@ -1,16 +1,16 @@
-# Poly Pass Architecture
+# Q Pass Architecture
 
 **Version**: 3.0
 **Date**: February 2026
 **Platform**: eStream v0.9.1
-**Upstream**: PolyKit v0.3.0, eStream scatter-cas, graph/DAG constructs
+**Upstream**: QKit v0.3.0, eStream scatter-cas, graph/DAG constructs
 **Build Pipeline**: FastLang (.fl) → FLIR → Rust/WASM codegen → .escd
 
 ---
 
 ## Overview
 
-Poly Pass is a post-quantum encrypted password manager with SPARK biometric authentication. No master password — vaults are unlocked exclusively via device-bound biometric keys. Credentials are individually PQ-encrypted, scatter-distributed via classification-driven k-of-n erasure coding, and synced across devices over the eStream wire protocol.
+Q Pass is a post-quantum encrypted password manager with SPARK biometric authentication. No master password — vaults are unlocked exclusively via device-bound biometric keys. Credentials are individually PQ-encrypted, scatter-distributed via classification-driven k-of-n erasure coding, and synced across devices over the eStream wire protocol.
 
 ### What Changed in v3.0
 
@@ -19,20 +19,20 @@ Poly Pass is a post-quantum encrypted password manager with SPARK biometric auth
 | Vault model | Flat encrypted container | `graph vault_registry` with typed overlays |
 | Sharing | Flat ACL stream | `graph share_network` with typed edges + `share_lifecycle` state machine |
 | Credential state | Implicit | `state_machine credential_lifecycle` (ACTIVE → DELETED) |
-| Circuit format | FLIR YAML (`circuit.flir.yaml`) | FastLang `.fl` with PolyKit profiles |
-| RBAC | Per-circuit annotations | eStream `rbac.fl` composed via PolyKit |
+| Circuit format | FLIR YAML (`circuit.flir.yaml`) | FastLang `.fl` with QKit profiles |
+| RBAC | Per-circuit annotations | eStream `rbac.fl` composed via QKit |
 | Platform | eStream v0.8.1 | eStream v0.9.1 |
 
 ---
 
 ## Zero-Linkage Privacy
 
-Poly Pass operates under the Poly Labs zero-linkage privacy architecture:
+Q Pass operates under the PolyQ Labs zero-linkage privacy architecture:
 
-- **HKDF context**: `poly-pass-v1` — produces `user_id`, signing key, and encryption key that cannot be correlated with any other Poly product
-- **Lex namespace**: `esn/global/org/polylabs/pass` — completely isolated from other product namespaces
-- **StreamSight**: Telemetry stays within `polylabs.pass.*` lex paths
-- **Metering**: Own `metering_graph` instance under `polylabs.pass.metering` lex
+- **HKDF context**: `q-pass-v1` — produces `user_id`, signing key, and encryption key that cannot be correlated with any other Poly product
+- **Lex namespace**: `esn/global/org/polyqlabs/pass` — completely isolated from other product namespaces
+- **StreamSight**: Telemetry stays within `polyqlabs.pass.*` lex paths
+- **Metering**: Own `metering_graph` instance under `polyqlabs.pass.metering` lex
 - **Billing**: Tier checked via blinded token status, not cross-product identity
 
 ---
@@ -45,7 +45,7 @@ Poly Pass operates under the Poly Labs zero-linkage privacy architecture:
 SPARK biometric → Secure Enclave/TEE → master_seed (in WASM, never exposed to JS)
                                             │
                                             ▼
-                                   HKDF-SHA3-256(master_seed, "poly-pass-v1")
+                                   HKDF-SHA3-256(master_seed, "q-pass-v1")
                                             │
                                             ├── ML-DSA-87 signing key pair
                                             │   (vault manifests, credential changes, ACL changes)
@@ -60,18 +60,18 @@ SPARK biometric → Secure Enclave/TEE → master_seed (in WASM, never exposed t
 user_id = SHA3-256(spark_ml_dsa_87_public_key)[0..16]   # 16-byte truncated hash
 ```
 
-All stream topics, vault ownership, and ACLs reference this SPARK-derived `user_id`. There are no usernames, emails, or phone numbers. This `user_id` is unique to Poly Pass and cannot be linked to identities in other Poly products.
+All stream topics, vault ownership, and ACLs reference this SPARK-derived `user_id`. There are no usernames, emails, or phone numbers. This `user_id` is unique to Q Pass and cannot be linked to identities in other Q products.
 
 ### No Master Password
 
-| Traditional Password Managers | Poly Pass |
+| Traditional Password Managers | Q Pass |
 |-------------------------------|-----------|
 | Master password → PBKDF2/Argon2 → vault key | SPARK biometric → Secure Enclave → ML-DSA-87 key pair → ML-KEM-1024 → vault decryption key |
 | Phishable (password to steal) | Cannot be phished (biometric, not typed) |
 | Keyloggable (typed input) | Cannot be keylogged (hardware biometric) |
 | Brute-forceable (entropy-limited) | Hardware-enforced rate limiting |
 
-Recovery: K-of-N guardian recovery via PolyKit `user_graph` guardian edges.
+Recovery: K-of-N guardian recovery via QKit `user_graph` guardian edges.
 
 ---
 
@@ -79,7 +79,7 @@ Recovery: K-of-N guardian recovery via PolyKit `user_graph` guardian edges.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         Poly Pass Client                              │
+│                         Q Pass Client                              │
 │                                                                       │
 │  ┌─────────────┐  ┌─────────────┐  ┌──────────┐  ┌──────────────┐  │
 │  │ Vault       │  │ Autofill    │  │ Password │  │ Security     │  │
@@ -89,8 +89,8 @@ Recovery: K-of-N guardian recovery via PolyKit `user_graph` guardian edges.
 │  ┌──────┴────────────────┴──────────────┴───────────────┴────────┐  │
 │  │              FastLang Circuits (WASM via .escd)                  │  │
 │  │                                                                 │  │
-│  │  polypass_encrypt.fl │ polypass_autofill.fl │ polypass_audit.fl │  │
-│  │  polypass_share.fl   │ polypass_metering.fl │ polypass_import.fl│  │
+│  │  qpass_encrypt.fl │ qpass_autofill.fl │ qpass_audit.fl │  │
+│  │  qpass_share.fl   │ qpass_metering.fl │ qpass_import.fl│  │
 │  │  (all ML-DSA-87 signed .escd packages, StreamSight-annotated)  │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
 │                              │                                        │
@@ -99,15 +99,15 @@ Recovery: K-of-N guardian recovery via PolyKit `user_graph` guardian edges.
 │  │                                                                   │  │
 │  │  graph vault_registry  — credential store as a graph              │  │
 │  │  graph share_network   — sharing ACLs + family/team vaults        │  │
-│  │  graph metering_graph  — per-app 8D usage (from PolyKit)         │  │
-│  │  graph user_graph      — per-product identity (from PolyKit)      │  │
+│  │  graph metering_graph  — per-app 8D usage (from QKit)         │  │
+│  │  graph user_graph      — per-product identity (from QKit)      │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
 │                              │                                        │
 │  ┌──────────────────────────┴──────────────────────────────────────┐  │
 │  │  ESLite (Client-Side State)                                       │  │
-│  │  /polypass/vault/*    — credential metadata + encrypted cache     │  │
-│  │  /polypass/autofill/* — URL → credential index                   │  │
-│  │  /polypass/audit/*    — breach check cache, strength scores       │  │
+│  │  /qpass/vault/*    — credential metadata + encrypted cache     │  │
+│  │  /qpass/autofill/* — URL → credential index                   │  │
+│  │  /qpass/audit/*    — breach check cache, strength scores       │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
 │                              │                                        │
 │  ┌──────────────────────────┴──────────────────────────────────────┐  │
@@ -124,8 +124,8 @@ Recovery: K-of-N guardian recovery via PolyKit `user_graph` guardian edges.
 │  ┌────────────────────────────┴─────────────────────────────────────┐ │
 │  │  Lattice-Hosted Circuits                                           │ │
 │  │                                                                    │ │
-│  │  polypass_vault_sync.fl │ polypass_share_relay.fl                  │ │
-│  │  polypass_metering.fl   │ scatter-cas runtime                     │ │
+│  │  qpass_vault_sync.fl │ qpass_share_relay.fl                  │ │
+│  │  qpass_metering.fl   │ scatter-cas runtime                     │ │
 │  └────┬───────────┬──────────────┬──────────────────────────────────┘ │
 │       │           │              │                                     │
 │  ┌────┴──────────────────────────────────────────────────────────┐   │
@@ -139,7 +139,7 @@ Recovery: K-of-N guardian recovery via PolyKit `user_graph` guardian edges.
 
 ## Graph/DAG Constructs
 
-### Vault Registry Graph (`polypass_vault_graph.fl`)
+### Vault Registry Graph (`qpass_vault_graph.fl`)
 
 The credential vault is modeled as a typed graph. Credentials, folders, and shared vaults are nodes; containment and sharing are edges. Overlays provide real-time state (breach status, password age, strength score) without mutating the base graph.
 
@@ -219,7 +219,7 @@ series vault_series: vault_registry
 
 Key circuits: `create_credential`, `update_credential`, `delete_credential`, `create_folder`, `move_credential`, `search_vault`, `autofill_lookup`.
 
-### Share Network Graph (`polypass_share_graph.fl`)
+### Share Network Graph (`qpass_share_graph.fl`)
 
 Sharing relationships are a graph. Users, shared vaults, and credentials are nodes; share permissions are edges with typed access levels. Family and team sharing both use the same graph — team vaults are `SharedVaultNode` with enterprise RBAC.
 
@@ -289,7 +289,7 @@ series share_series: share_network
 
 Key circuits: `share_credential`, `revoke_share`, `create_shared_vault`, `add_vault_member`, `remove_vault_member`, `re_wrap_key`.
 
-### Credential Lifecycle State Machine (`polypass_credential_lifecycle.fl`)
+### Credential Lifecycle State Machine (`qpass_credential_lifecycle.fl`)
 
 Every credential follows a strict lifecycle with anomaly detection on state transitions.
 
@@ -330,20 +330,20 @@ Per-credential keys are re-wrapped with the recipient's SPARK ML-KEM-1024 public
 Owner shares credential with recipient:
     1. Encrypt per-credential key with recipient's ML-KEM-1024 public key
     2. Create SharedWithEdge in share_network graph
-    3. Publish wrapped credential to polylabs.pass.{vault_id}.share
+    3. Publish wrapped credential to polyqlabs.pass.{vault_id}.share
     4. Recipient decrypts with their SPARK ML-KEM-1024 private key
     5. Owner revokes: re-wrap vault without recipient's key, transition share_lifecycle → REVOKED
 ```
 
 ### Enterprise Teams
 
-Team vaults are `SharedVaultNode` instances in the `share_network` graph. `MemberOfEdge` carries a role (admin, editor, viewer). RBAC is composed from eStream `rbac.fl` via PolyKit profiles.
+Team vaults are `SharedVaultNode` instances in the `share_network` graph. `MemberOfEdge` carries a role (admin, editor, viewer). RBAC is composed from eStream `rbac.fl` via QKit profiles.
 
 ```fastlang
-circuit polypass_team_vault(vault_id: bytes(16), user_id: bytes(16), action: u8) -> bool
+circuit qpass_team_vault(vault_id: bytes(16), user_id: bytes(16), action: u8) -> bool
     profile poly_framework_sensitive
-    composes: [polykit_identity, polykit_metering, polykit_rbac]
-    lex esn/global/org/polylabs/pass/team
+    composes: [qkit_identity, qkit_metering, qkit_rbac]
+    lex esn/global/org/polyqlabs/pass/team
     constant_time true
 {
     rbac_check(user_id, vault_id, action)
@@ -363,7 +363,7 @@ Webpage loads
 Extension detects login form (heuristic + ML)
     │
     ▼
-Query polypass_autofill circuit for matching credentials (URL → vault_registry lookup)
+Query qpass_autofill circuit for matching credentials (URL → vault_registry lookup)
     │
     ▼
 SPARK biometric prompt (if not recently authenticated)
@@ -381,7 +381,7 @@ If TOTP available: auto-copy 2FA code to clipboard (auto-clear after 30s)
 ### Mobile (iOS/Android)
 - iOS: AutoFill Credential Provider extension
 - Android: Autofill Framework service
-- Same `poly-pass-core` Rust engine via FFI
+- Same `q-pass-core` Rust engine via FFI
 
 ### Desktop (Tauri)
 - System-wide autofill via OS accessibility APIs
@@ -390,13 +390,13 @@ If TOTP available: auto-copy 2FA code to clipboard (auto-clear after 30s)
 
 ### Passkey Support (FIDO2/WebAuthn)
 
-Poly Pass stores and serves FIDO2 passkey credentials. The `passkey_credential_id` field on `CredentialNode` holds the WebAuthn credential ID. On authentication, the browser extension or OS integration invokes the passkey ceremony using the stored credential, with the SPARK biometric gating access to the private key material.
+Q Pass stores and serves FIDO2 passkey credentials. The `passkey_credential_id` field on `CredentialNode` holds the WebAuthn credential ID. On authentication, the browser extension or OS integration invokes the passkey ceremony using the stored credential, with the SPARK biometric gating access to the private key material.
 
 ---
 
 ## Security Audit
 
-Continuous background analysis via the `polypass_audit.fl` circuit:
+Continuous background analysis via the `qpass_audit.fl` circuit:
 
 | Check | Description | Graph Source |
 |-------|-------------|--------------|
@@ -414,7 +414,7 @@ Breach checking uses **k-anonymity** (SHA-1 prefix query) so the full password h
 
 ## Stratum & Cortex Integration
 
-Poly Pass uses the full **Stratum + Cortex** pattern across both graph files. Stratum provides the typed graph storage layer with CSR (Compressed Sparse Row) tiered memory, delta-curated overlays, and merkle-chained series. Cortex adds AI governance with field-level privacy controls, anomaly detection, and ESLM feed integration.
+Q Pass uses the full **Stratum + Cortex** pattern across both graph files. Stratum provides the typed graph storage layer with CSR (Compressed Sparse Row) tiered memory, delta-curated overlays, and merkle-chained series. Cortex adds AI governance with field-level privacy controls, anomaly detection, and ESLM feed integration.
 
 ### How It Works
 
@@ -426,7 +426,7 @@ data CredentialNode : app v1 {
     ...
 }
     store graph
-    govern lex esn/global/org/polylabs/pass
+    govern lex esn/global/org/polyqlabs/pass
     cortex {
         redact [password_encrypted, notes_encrypted, totp_seed]
         obfuscate [user_id, url_domain]
@@ -476,7 +476,7 @@ Both use `persistence wal` and `li_anomaly_detection true` for durable state wit
 
 ## scatter-cas Integration
 
-Poly Pass builds on eStream's `scatter-cas` runtime for all vault storage. Classification-driven k-of-n erasure coding distributes encrypted credentials across providers.
+Q Pass builds on eStream's `scatter-cas` runtime for all vault storage. Classification-driven k-of-n erasure coding distributes encrypted credentials across providers.
 
 ### Storage Layers
 
@@ -497,7 +497,7 @@ Each credential is individually encrypted and scatter-stored — compromise of o
 
 ## FastLang Circuits
 
-All circuits are written in FastLang `.fl` using PolyKit profiles. The build pipeline is:
+All circuits are written in FastLang `.fl` using QKit profiles. The build pipeline is:
 
 ```bash
 estream-dev build-wasm-client --from-fl circuits/fl/ --sign key.pem --enforce-budget
@@ -507,18 +507,18 @@ estream-dev build-wasm-client --from-fl circuits/fl/ --sign key.pem --enforce-bu
 
 | Circuit | File | Purpose | Size Budget |
 |---------|------|---------|-------------|
-| `polypass_encrypt` | `polypass_encrypt.fl` | ML-KEM-1024 key gen, per-credential AES-256-GCM encryption | ≤128 KB |
-| `polypass_autofill` | `polypass_autofill.fl` | URL matching, credential lookup, form field mapping | ≤128 KB |
-| `polypass_audit` | `polypass_audit.fl` | Breach check, strength scoring, reuse detection | ≤128 KB |
-| `polypass_share` | `polypass_share.fl` | Key re-wrapping, share lifecycle management | ≤128 KB |
-| `polypass_import` | `polypass_import.fl` | Multi-format import parsing, deduplication | ≤128 KB |
+| `qpass_encrypt` | `qpass_encrypt.fl` | ML-KEM-1024 key gen, per-credential AES-256-GCM encryption | ≤128 KB |
+| `qpass_autofill` | `qpass_autofill.fl` | URL matching, credential lookup, form field mapping | ≤128 KB |
+| `qpass_audit` | `qpass_audit.fl` | Breach check, strength scoring, reuse detection | ≤128 KB |
+| `qpass_share` | `qpass_share.fl` | Key re-wrapping, share lifecycle management | ≤128 KB |
+| `qpass_import` | `qpass_import.fl` | Multi-format import parsing, deduplication | ≤128 KB |
 
-All circuits compose PolyKit:
+All circuits compose QKit:
 ```fastlang
-circuit polypass_encrypt(user_id: bytes(16), cred_key: bytes(32), plaintext: bytes) -> bytes
+circuit qpass_encrypt(user_id: bytes(16), cred_key: bytes(32), plaintext: bytes) -> bytes
     profile poly_framework_sensitive
-    composes: [polykit_identity, polykit_metering, polykit_sanitize]
-    lex esn/global/org/polylabs/pass/encrypt
+    composes: [qkit_identity, qkit_metering, qkit_sanitize]
+    lex esn/global/org/polyqlabs/pass/encrypt
     constant_time true
     observe metrics: [encrypt_ops, cred_count, latency_ns]
 {
@@ -530,9 +530,9 @@ circuit polypass_encrypt(user_id: bytes(16), cred_key: bytes(32), plaintext: byt
 
 | Circuit | File | Purpose |
 |---------|------|---------|
-| `polypass_vault_sync` | `polypass_vault_sync.fl` | Scatter policy enforcement, cross-device sync |
-| `polypass_share_relay` | `polypass_share_relay.fl` | Share invitation relay, ACL enforcement |
-| `polypass_metering` | `polypass_metering.fl` | Per-product 8D metering (isolated) |
+| `qpass_vault_sync` | `qpass_vault_sync.fl` | Scatter policy enforcement, cross-device sync |
+| `qpass_share_relay` | `qpass_share_relay.fl` | Share invitation relay, ACL enforcement |
+| `qpass_metering` | `qpass_metering.fl` | Per-product 8D metering (isolated) |
 
 ---
 
@@ -552,23 +552,23 @@ Importers for major password managers:
 | KeePass | KDBX |
 | Proton Pass | JSON |
 
-Import is handled by the `polypass_import.fl` circuit (WASM). Parsing runs entirely on-device — no credential data is sent to any server during import. Imported credentials are deduplicated against existing `vault_registry` entries by `site` + `username_hash`.
+Import is handled by the `qpass_import.fl` circuit (WASM). Parsing runs entirely on-device — no credential data is sent to any server during import. Imported credentials are deduplicated against existing `vault_registry` entries by `site` + `username_hash`.
 
 ---
 
 ## StreamSight Observability
 
-Per-product isolated telemetry within the `polylabs.pass.*` lex namespace.
+Per-product isolated telemetry within the `polyqlabs.pass.*` lex namespace.
 
 ### Telemetry Stream Paths
 
 ```
-lex://estream/apps/polylabs.pass/telemetry
-lex://estream/apps/polylabs.pass/telemetry/sli
-lex://estream/apps/polylabs.pass/metrics/baseline
-lex://estream/apps/polylabs.pass/metrics/deviations
-lex://estream/apps/polylabs.pass/incidents
-lex://estream/apps/polylabs.pass/eslm/breach_alerting
+lex://estream/apps/polyqlabs.pass/telemetry
+lex://estream/apps/polyqlabs.pass/telemetry/sli
+lex://estream/apps/polyqlabs.pass/metrics/baseline
+lex://estream/apps/polyqlabs.pass/metrics/deviations
+lex://estream/apps/polyqlabs.pass/incidents
+lex://estream/apps/polyqlabs.pass/eslm/breach_alerting
 ```
 
 No telemetry path references any other Poly product. StreamSight baseline gate learns per-operation latency distributions and flags deviations.
@@ -579,34 +579,34 @@ No telemetry path references any other Poly product. StreamSight baseline gate l
 
 | Widget ID | Category | Description |
 |-----------|----------|-------------|
-| `polypass-vault-health` | observability | Credential count, breach %, strength distribution |
-| `polypass-autofill-latency` | observability | Autofill latency gauge (lookup + decrypt + fill) |
-| `polypass-breach-feed` | observability | Real-time breach detection feed |
-| `polypass-deviation-feed` | observability | StreamSight baseline deviation feed |
-| `polypass-share-activity` | observability | Sharing activity and access patterns |
-| `polypass-credential-lifecycle` | governance | Credential state distribution (active/expired/compromised) |
-| `polypass-audit-summary` | governance | Security audit score and recommendations |
+| `qpass-vault-health` | observability | Credential count, breach %, strength distribution |
+| `qpass-autofill-latency` | observability | Autofill latency gauge (lookup + decrypt + fill) |
+| `qpass-breach-feed` | observability | Real-time breach detection feed |
+| `qpass-deviation-feed` | observability | StreamSight baseline deviation feed |
+| `qpass-share-activity` | observability | Sharing activity and access patterns |
+| `qpass-credential-lifecycle` | governance | Credential state distribution (active/expired/compromised) |
+| `qpass-audit-summary` | governance | Security audit score and recommendations |
 
 ---
 
 ## Enterprise
 
-### Poly OAuth Integration
+### Q OAuth Integration
 
-When enterprise uses Poly OAuth + Poly Pass:
+When enterprise uses Q OAuth + Q Pass:
 
-1. Employee authenticates via Poly OAuth (SPARK biometric)
-2. Poly Pass auto-provisions credentials for SSO apps
-3. Non-SSO apps: Poly Pass autofills credentials
+1. Employee authenticates via Q OAuth (SPARK biometric)
+2. Q Pass auto-provisions credentials for SSO apps
+3. Non-SSO apps: Q Pass autofills credentials
 4. Admin console manages both identity and credential policies
-5. Offboarding: revoke Poly OAuth → all credentials inaccessible
+5. Offboarding: revoke Q OAuth → all credentials inaccessible
 
 ### Lex Bridge (Opt-In)
 
-Enterprise admins can opt-in to cross-product visibility via an explicit lex bridge between `esn/global/org/polylabs/pass` and the enterprise admin namespace. The bridge is gated by **k-of-n admin witness attestation** and is revocable.
+Enterprise admins can opt-in to cross-product visibility via an explicit lex bridge between `esn/global/org/polyqlabs/pass` and the enterprise admin namespace. The bridge is gated by **k-of-n admin witness attestation** and is revocable.
 
 ```
-Enterprise admin namespace ←──lex bridge──→ polylabs.pass.{org_id}.*
+Enterprise admin namespace ←──lex bridge──→ polyqlabs.pass.{org_id}.*
                               │
                               └── gated by k-of-n witness attestation
                               └── org-level aggregates only (no individual user vault data)
@@ -624,30 +624,30 @@ Even with the bridge, individual user vault contents are never exposed — only 
 | Free | 50 | 2 | Vault, autofill, generator | $0 |
 | Premium | Unlimited | Unlimited | + 2FA, secure notes, sharing (5 users), breach monitor | $2.99/mo |
 | Family | Unlimited | Unlimited | + 6 members, family vault, shared folders | $4.99/mo |
-| Enterprise | Unlimited | Unlimited | + SSO via Poly OAuth, SCIM, admin console, audit, teams | Per-seat (custom) |
+| Enterprise | Unlimited | Unlimited | + SSO via Q OAuth, SCIM, admin console, audit, teams | Per-seat (custom) |
 
-Tier enforcement via PolyKit `metering_graph` + `subscription_lifecycle` state machine. Billing uses blinded payment tokens — backend cannot correlate which SPARK identity subscribes to which tier.
+Tier enforcement via QKit `metering_graph` + `subscription_lifecycle` state machine. Billing uses blinded payment tokens — backend cannot correlate which SPARK identity subscribes to which tier.
 
 ---
 
 ## Directory Structure
 
 ```
-polypass/
+qpass/
 ├── circuits/fl/
-│   ├── polypass_encrypt.fl
-│   ├── polypass_autofill.fl
-│   ├── polypass_audit.fl
-│   ├── polypass_share.fl
-│   ├── polypass_import.fl
-│   ├── polypass_vault_sync.fl
-│   ├── polypass_share_relay.fl
-│   ├── polypass_metering.fl
+│   ├── qpass_encrypt.fl
+│   ├── qpass_autofill.fl
+│   ├── qpass_audit.fl
+│   ├── qpass_share.fl
+│   ├── qpass_import.fl
+│   ├── qpass_vault_sync.fl
+│   ├── qpass_share_relay.fl
+│   ├── qpass_metering.fl
 │   └── graphs/
-│       ├── polypass_vault_graph.fl
-│       └── polypass_share_graph.fl
+│       ├── qpass_vault_graph.fl
+│       └── qpass_share_graph.fl
 ├── crates/
-│   └── poly-pass-core/
+│   └── q-pass-core/
 ├── apps/
 │   ├── extension/          Browser extension (Chrome, Firefox, Safari)
 │   ├── desktop/            Tauri vault manager
@@ -671,7 +671,7 @@ polypass/
 - FastLang circuits for encryption, autofill, audit
 - Desktop app (Tauri) with vault management
 - Browser extension (Chrome, Firefox, Safari)
-- SPARK biometric auth (`poly-pass-v1`)
+- SPARK biometric auth (`q-pass-v1`)
 - Password generator
 - Scatter-stored vault (3-of-5)
 - StreamSight L0 metrics
@@ -688,14 +688,14 @@ polypass/
 - `share_network` graph with `share_lifecycle` state machine
 - Family/friend sharing via ML-KEM-1024 key re-wrapping
 - Team vaults with RBAC
-- Poly OAuth integration
+- Q OAuth integration
 - Enterprise admin console
 - SCIM provisioning
 - Console widgets (7 widgets)
 
 ### Phase 4: Advanced (2027+)
 - Lex bridge for enterprise cross-product visibility (opt-in, k-of-n gated)
-- Poly Vault HSM integration (credential encryption keys in hardware)
-- Poly Mind integration (credential recommendations via ESLM)
+- Q Vault HSM integration (credential encryption keys in hardware)
+- Q Mind integration (credential recommendations via ESLM)
 - Enterprise compliance (DLP, retention policies)
 - ESN-AI optimization recommendations

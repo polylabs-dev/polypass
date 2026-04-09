@@ -1,8 +1,8 @@
 /// Spec: specs/POLYPASS_CE_APP_GRAPH_SPEC.md
 /// CE meaning layer for PolyPass — 3 meaning domains, noise filter,
-/// 2 SME panels, and the polypass_register_ce orchestrator.
+/// 2 SME panels, and the qpass_register_ce orchestrator.
 
-lex polylabs/polypass
+lex polyqlabs/qpass
 
 @target software
 @codegen_targets ["wasm", "rust"]
@@ -20,15 +20,15 @@ import "core/intelligence/ce/ssm.fl" {
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-const POLYPASS_CE_LEX: string = "polylabs/polypass"
+const POLYPASS_CE_LEX: string = "polyqlabs/qpass"
 const POLYPASS_CE_VERSION: string = "0.1.0"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Meaning Domain 1: security/vault_health
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polypass_vault_health_domain() -> MeaningDomain
-    lex polylabs/polypass
+circuit qpass_vault_health_domain() -> MeaningDomain
+    lex polyqlabs/qpass
     @status production
     @precision B
     observe metrics: [domain_registration]
@@ -41,31 +41,31 @@ circuit polypass_vault_health_domain() -> MeaningDomain
         signals: [
             MeaningSignal {
                 name: "breach_alert_fired",
-                source_module: "polypass_breach",
+                source_module: "qpass_breach",
                 severity: "critical",
                 meaning: "Credential compromised — immediate rotation required",
             },
             MeaningSignal {
                 name: "weak_password_pattern",
-                source_module: "polypass_encrypt",
+                source_module: "qpass_encrypt",
                 severity: "warning",
                 meaning: "Repeated or low-entropy passwords across vault entries",
             },
             MeaningSignal {
                 name: "reused_credential_detected",
-                source_module: "polypass_encrypt",
+                source_module: "qpass_encrypt",
                 severity: "warning",
                 meaning: "Same password used across multiple origins",
             },
             MeaningSignal {
                 name: "encryption_key_age_exceeded",
-                source_module: "polypass_platform_health",
+                source_module: "qpass_platform_health",
                 severity: "warning",
                 meaning: "Key rotation overdue — age exceeds policy threshold",
             },
             MeaningSignal {
                 name: "vault_integrity_failure",
-                source_module: "polypass_platform_health",
+                source_module: "qpass_platform_health",
                 severity: "critical",
                 meaning: "Scatter-CAS shard inconsistency or corruption detected",
             },
@@ -79,8 +79,8 @@ circuit polypass_vault_health_domain() -> MeaningDomain
 // Meaning Domain 2: security/autofill_accuracy
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polypass_autofill_accuracy_domain() -> MeaningDomain
-    lex polylabs/polypass
+circuit qpass_autofill_accuracy_domain() -> MeaningDomain
+    lex polyqlabs/qpass
     @status production
     @precision B
     observe metrics: [domain_registration]
@@ -93,25 +93,25 @@ circuit polypass_autofill_accuracy_domain() -> MeaningDomain
         signals: [
             MeaningSignal {
                 name: "autofill_match_rate",
-                source_module: "polypass_autofill",
+                source_module: "qpass_autofill",
                 severity: "info",
                 meaning: "Percentage of form fills matched correctly on first attempt",
             },
             MeaningSignal {
                 name: "phishing_origin_blocked",
-                source_module: "polypass_autofill",
+                source_module: "qpass_autofill",
                 severity: "critical",
                 meaning: "Homograph or redirect-based phishing attempt intercepted",
             },
             MeaningSignal {
                 name: "multi_credential_disambiguation",
-                source_module: "polypass_autofill",
+                source_module: "qpass_autofill",
                 severity: "info",
                 meaning: "Multiple credentials for same origin — disambiguation success rate",
             },
             MeaningSignal {
                 name: "totp_auto_paste_rate",
-                source_module: "polypass_totp",
+                source_module: "qpass_totp",
                 severity: "info",
                 meaning: "TOTP codes auto-pasted vs manually copied ratio",
             },
@@ -125,8 +125,8 @@ circuit polypass_autofill_accuracy_domain() -> MeaningDomain
 // Meaning Domain 3: security/sharing_patterns
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polypass_sharing_patterns_domain() -> MeaningDomain
-    lex polylabs/polypass
+circuit qpass_sharing_patterns_domain() -> MeaningDomain
+    lex polyqlabs/qpass
     @status production
     @precision B
     observe metrics: [domain_registration]
@@ -139,25 +139,25 @@ circuit polypass_sharing_patterns_domain() -> MeaningDomain
         signals: [
             MeaningSignal {
                 name: "share_token_created",
-                source_module: "polypass_share",
+                source_module: "qpass_share",
                 severity: "info",
                 meaning: "New credential share — recipient, scope, TTL",
             },
             MeaningSignal {
                 name: "share_revocation_velocity",
-                source_module: "polypass_share",
+                source_module: "qpass_share",
                 severity: "warning",
                 meaning: "Shares revoked within minutes of creation — possible accidental share",
             },
             MeaningSignal {
                 name: "expired_share_access_attempt",
-                source_module: "polypass_share",
+                source_module: "qpass_share",
                 severity: "warning",
                 meaning: "Recipient attempted access after token expiry",
             },
             MeaningSignal {
                 name: "bulk_share_event",
-                source_module: "polypass_share",
+                source_module: "qpass_share",
                 severity: "warning",
                 meaning: "Multiple credentials shared in single session — onboarding vs exfiltration signal",
             },
@@ -171,21 +171,21 @@ circuit polypass_sharing_patterns_domain() -> MeaningDomain
 // Noise Filter
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polypass_noise_filter() -> list[NoiseRule]
-    lex polylabs/polypass
+circuit qpass_noise_filter() -> list[NoiseRule]
+    lex polyqlabs/qpass
     @status production
     @precision C
 {
     [
         NoiseRule {
             event_pattern: "autofill_cache_miss",
-            source_module: "polypass_autofill",
+            source_module: "qpass_autofill",
             action: "suppress",
             reason: "Browser extension periodic cache refresh — no user action",
         },
         NoiseRule {
             event_pattern: "browser_extension_heartbeat",
-            source_module: "polypass_autofill",
+            source_module: "qpass_autofill",
             action: "suppress",
             reason: "Liveness check — no security meaning",
         },
@@ -197,13 +197,13 @@ circuit polypass_noise_filter() -> list[NoiseRule]
         },
         NoiseRule {
             event_pattern: "totp_generation_tick",
-            source_module: "polypass_totp",
+            source_module: "qpass_totp",
             action: "suppress",
             reason: "30-second timer tick — signal only on paste/use",
         },
         NoiseRule {
             event_pattern: "metering_counter_increment",
-            source_module: "polypass_metering",
+            source_module: "qpass_metering",
             action: "suppress",
             reason: "Raw counter — aggregate in metering circuit, not CE",
         },
@@ -214,8 +214,8 @@ circuit polypass_noise_filter() -> list[NoiseRule]
 // SME Panel 1: Vault Security Posture
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polypass_vault_security_panel() -> SMEPanel
-    lex polylabs/polypass
+circuit qpass_vault_security_panel() -> SMEPanel
+    lex polyqlabs/qpass
     @status production
     @precision B
 {
@@ -247,8 +247,8 @@ circuit polypass_vault_security_panel() -> SMEPanel
 // SME Panel 2: Credential Sharing Governance
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polypass_sharing_governance_panel() -> SMEPanel
-    lex polylabs/polypass
+circuit qpass_sharing_governance_panel() -> SMEPanel
+    lex polyqlabs/qpass
     @status production
     @precision B
 {
@@ -279,10 +279,10 @@ circuit polypass_sharing_governance_panel() -> SMEPanel
 // CE Registration Orchestrator
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polypass_register_ce(
+circuit qpass_register_ce(
     ce: CEState
 ) -> CEState
-    lex polylabs/polypass
+    lex polyqlabs/qpass
     @status production
     @precision B
     @attested true
@@ -290,19 +290,19 @@ circuit polypass_register_ce(
     meters [compute_cycles]
 {
     // Register meaning domains
-    let ce = ce_register_domain(ce, polypass_vault_health_domain())
-    let ce = ce_register_domain(ce, polypass_autofill_accuracy_domain())
-    let ce = ce_register_domain(ce, polypass_sharing_patterns_domain())
+    let ce = ce_register_domain(ce, qpass_vault_health_domain())
+    let ce = ce_register_domain(ce, qpass_autofill_accuracy_domain())
+    let ce = ce_register_domain(ce, qpass_sharing_patterns_domain())
 
     // Register noise filter rules
-    let noise_rules = polypass_noise_filter()
+    let noise_rules = qpass_noise_filter()
     for rule in noise_rules {
         ce = ce_register_noise_rule(ce, rule)
     }
 
     // Register SME panels
-    let ce = ce_register_sme_panel(ce, polypass_vault_security_panel())
-    let ce = ce_register_sme_panel(ce, polypass_sharing_governance_panel())
+    let ce = ce_register_sme_panel(ce, qpass_vault_security_panel())
+    let ce = ce_register_sme_panel(ce, qpass_sharing_governance_panel())
 
     ce
 }
@@ -312,36 +312,36 @@ circuit polypass_register_ce(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-circuit test_polypass_ce_domain_count()
-    lex polylabs/polypass
+circuit test_qpass_ce_domain_count()
+    lex polyqlabs/qpass
 {
     let ce = CEState::new(POLYPASS_CE_LEX)
-    let ce = polypass_register_ce(ce)
+    let ce = qpass_register_ce(ce)
     assert(ce.domain_count == 3, "expected 3 meaning domains")
 }
 
 #[test]
-circuit test_polypass_noise_filter_count()
-    lex polylabs/polypass
+circuit test_qpass_noise_filter_count()
+    lex polyqlabs/qpass
 {
-    let rules = polypass_noise_filter()
+    let rules = qpass_noise_filter()
     assert(rules.len() == 5, "expected 5 noise filter rules")
 }
 
 #[test]
-circuit test_polypass_sme_panel_count()
-    lex polylabs/polypass
+circuit test_qpass_sme_panel_count()
+    lex polyqlabs/qpass
 {
     let ce = CEState::new(POLYPASS_CE_LEX)
-    let ce = polypass_register_ce(ce)
+    let ce = qpass_register_ce(ce)
     assert(ce.panel_count == 2, "expected 2 SME panels")
 }
 
 #[test]
-circuit test_polypass_vault_health_signals()
-    lex polylabs/polypass
+circuit test_qpass_vault_health_signals()
+    lex polyqlabs/qpass
 {
-    let domain = polypass_vault_health_domain()
+    let domain = qpass_vault_health_domain()
     assert(domain.signals.len() == 5, "vault_health must have 5 signals")
     assert(domain.ssm_slot.dim == 64, "SSM slot must be 64-dim")
 }

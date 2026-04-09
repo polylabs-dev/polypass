@@ -1,15 +1,15 @@
 [package]
-name = "poly-pass-wasm"
+name = "q-pass-wasm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "WASM entry point for Poly Pass — browser-side PQ password manager"
+description = "WASM entry point for Q Pass — browser-side PQ password manager"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-poly-pass-core = { path = "../poly-pass-core" }
+q-pass-core = { path = "../q-pass-core" }
 serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen = "0.2"

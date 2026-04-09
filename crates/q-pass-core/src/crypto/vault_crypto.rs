@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn test_credential_aad_deterministic() {
         let cred_id = [0x01u8; 16];
-        let user_id = b"user@polylabs.dev";
+        let user_id = b"user@polyqlabs.dev";
         let aad1 = build_credential_aad(&cred_id, 3, user_id);
         let aad2 = build_credential_aad(&cred_id, 3, user_id);
         assert_eq!(aad1, aad2);

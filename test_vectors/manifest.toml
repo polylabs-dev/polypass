@@ -1,47 +1,47 @@
 [test_suite]
-name = "polypass-core-vectors"
+name = "qpass-core-vectors"
 version = "0.1.0"
-circuit_id = "esn.polylabs.polypass"
+circuit_id = "esn.polyqlabs.qpass"
 vector_count = 7
 
 [[test_suite.vectors]]
-file = "polypass.esz"
+file = "qpass.esz"
 circuit = "vault_store"
 category = "happy_path"
 name = "happy path — store and retrieve credential"
 
 [[test_suite.vectors]]
-file = "polypass.esz"
+file = "qpass.esz"
 circuit = "credential_autofill"
 category = "happy_path"
 name = "happy path — autofill credential for matching site"
 
 [[test_suite.vectors]]
-file = "polypass.esz"
+file = "qpass.esz"
 circuit = "vault_store"
 category = "edge_case"
 name = "edge case — vault at max capacity (10000 entries)"
 
 [[test_suite.vectors]]
-file = "polypass.esz"
+file = "qpass.esz"
 circuit = "vault_encrypt"
 category = "crypto"
 name = "crypto — ML-KEM-1024 encrypt/decrypt round-trip"
 
 [[test_suite.vectors]]
-file = "polypass.esz"
+file = "qpass.esz"
 circuit = "breach_check"
 category = "crypto"
 name = "crypto — breach check against known-compromised hash set"
 
 [[test_suite.vectors]]
-file = "polypass.esz"
+file = "qpass.esz"
 circuit = "vault_store"
 category = "telemetry_isolation"
-name = "blind telemetry isolation — polypass metrics never leak to other products"
+name = "blind telemetry isolation — qpass metrics never leak to other products"
 
 [[test_suite.vectors]]
-file = "polypass.esz"
+file = "qpass.esz"
 circuit = "share_credential"
 category = "error_handling"
 name = "error handling — share grant to revoked identity"

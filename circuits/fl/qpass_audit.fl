@@ -1,13 +1,13 @@
-// Poly Pass Audit — Password strength scoring, reuse detection, vault health (v0.12.0)
+// Q Pass Audit — Password strength scoring, reuse detection, vault health (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass/audit
+//   esn/global/org/polyqlabs/pass/audit
 //   Strength scoring via entropy analysis. Reuse detection via hash grouping.
 //   Health reports aggregate breach, strength, age, 2FA, passkey coverage.
-//   Breach checking moved to polypass_breach.fl for isolation.
+//   Breach checking moved to qpass_breach.fl for isolation.
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 // ── Data Declarations (Stratum + Cortex) ────────────────────────
 
@@ -24,7 +24,7 @@ data StrengthScore : pass v1 {
     feedback: list<string>,
 }
     store kv
-    govern lex global/org/polylabs/pass/audit
+    govern lex global/org/polyqlabs/pass/audit
     cortex {
         infer on_write
         on_anomaly alert "pass-security"
@@ -38,7 +38,7 @@ data ReuseReport : pass v1 {
     reuse_percentage: u8,
 }
     store kv
-    govern lex global/org/polylabs/pass/audit
+    govern lex global/org/polyqlabs/pass/audit
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -59,7 +59,7 @@ data HealthReport : pass v1 {
     generated_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass/audit
+    govern lex global/org/polyqlabs/pass/audit
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -85,7 +85,7 @@ circuit score_strength(
     password: bytes,
 ) -> StrengthScore
     profile poly_framework_standard
-    lex global/org/polylabs/pass/audit
+    lex global/org/polyqlabs/pass/audit
     @precision B
     @observe metrics: [strength_scores, weak_passwords, strong_passwords]
     invariant "password_present" { len(password) > 0 }
@@ -142,7 +142,7 @@ circuit detect_reuse(
     domains: list<string>,
 ) -> ReuseReport
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass/audit
+    lex global/org/polyqlabs/pass/audit
     @precision B
     constant_time true
     @observe metrics: [reuse_scans, reuse_groups_found, reuse_percentage]
@@ -201,7 +201,7 @@ circuit generate_health_report(
     unused_threshold_days: u32,
 ) -> HealthReport
     profile poly_framework_standard
-    lex global/org/polylabs/pass/audit
+    lex global/org/polyqlabs/pass/audit
     @precision B
     @observe metrics: [health_reports_generated, overall_scores]
     invariant "consistent_lengths" {
@@ -251,7 +251,7 @@ circuit generate_health_report(
 
     emit(health_reports, report)
 
-    polykit_metering::record_usage(user_id, "pass_health_report", DimensionValues {
+    qkit_metering::record_usage(user_id, "pass_health_report", DimensionValues {
         executions: 1, hashes: 0, bandwidth: 0,
         storage: 0, observables: total, proofs: 0, circuits: 0, mpc_sessions: 0,
     })

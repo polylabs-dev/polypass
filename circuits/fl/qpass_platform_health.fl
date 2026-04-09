@@ -1,7 +1,7 @@
-// Poly Pass Platform Health — Blind relay telemetry for vault operations (v0.12.0)
+// Q Pass Platform Health — Blind relay telemetry for vault operations (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/pass
+//   esn/global/org/polyqlabs/pass
 //     └── sub_lex vault fan_in  ← per-vault health; aggregates fan up
 //
 // Aggregates platform-wide health metrics under zero-linkage privacy:
@@ -10,8 +10,8 @@
 //   - Differential privacy noise on all emitted metrics
 //   - Temporal aggregation (1h minimum window)
 
-import polykit_blind_telemetry from "../../polykit/circuits/fl/polykit_blind_telemetry.fl"
-import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+import qkit_blind_telemetry from "../../qkit/circuits/fl/qkit_blind_telemetry.fl"
+import qkit_metering from "../../qkit/circuits/fl/qkit_metering.fl"
 
 // ── Data Declarations (Stratum + Cortex) ────────────────────────
 
@@ -30,7 +30,7 @@ data PlatformMetrics : pass v1 {
     collected_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass
+    govern lex global/org/polyqlabs/pass
     cortex {
         obfuscate [blinded_pass_id]
         infer on_write
@@ -51,7 +51,7 @@ data PassHealthSnapshot : pass v1 {
     baseline_vaults: u64,
 }
     store kv
-    govern lex global/org/polylabs/pass
+    govern lex global/org/polyqlabs/pass
     cortex {
         infer on_read
     }
@@ -82,7 +82,7 @@ series pass_health_series: pass_health_events
 
 // ── Circuits ────────────────────────────────────────────────────
 
-circuit polypass_platform_health(
+circuit qpass_platform_health(
     spark_id: bytes(32),
     active_user_count: u32,
     window_start_ms: u64,
@@ -95,7 +95,7 @@ circuit polypass_platform_health(
     sync_operations: u64,
 ) -> option<PlatformMetrics>
     profile poly_framework_sensitive
-    lex global/org/polylabs/pass {
+    lex global/org/polyqlabs/pass {
         governance hierarchical
         audit_trail true
         sub_lex vault fan_in
@@ -103,7 +103,7 @@ circuit polypass_platform_health(
     @precision C
     @observe true
     constant_time true
-    @serialize "verify/polypass_platform_health.esz"
+    @serialize "verify/qpass_platform_health.esz"
     li_feed full_flir true, optimized_ir true, optimization_metadata true
     @observe metrics: [health_snapshots_emitted, health_snapshots_rejected, pass_anomalies_detected]
     monitor "breach_check_rate" { breach_checks < 5000/hr }
@@ -120,20 +120,20 @@ circuit polypass_platform_health(
 {
     let ts = now_ns() / 1000000
 
-    let blinded_id = polykit_blind_telemetry::blind_user_id(spark_id, "poly-pass-telemetry-v1")
+    let blinded_id = qkit_blind_telemetry::blind_user_id(spark_id, "poly-pass-telemetry-v1")
 
-    let (cohort_status, cohort_ok) = polykit_blind_telemetry::enforce_cohort(active_user_count, 50)
+    let (cohort_status, cohort_ok) = qkit_blind_telemetry::enforce_cohort(active_user_count, 50)
     if !cohort_ok { return none }
 
-    let window_ok = polykit_blind_telemetry::enforce_aggregate_window(window_start_ms, window_end_ms, 3600000)
+    let window_ok = qkit_blind_telemetry::enforce_aggregate_window(window_start_ms, window_end_ms, 3600000)
     if !window_ok { return none }
 
-    let noised_queries = polykit_blind_telemetry::inject_noise(platform_queries, 1, 1000)
-    let noised_vaults = polykit_blind_telemetry::inject_noise(active_vaults, 1, 1000)
-    let noised_cred_ops = polykit_blind_telemetry::inject_noise(credential_operations, 1, 1000)
-    let noised_autofills = polykit_blind_telemetry::inject_noise(autofill_events, 1, 1000)
-    let noised_breach = polykit_blind_telemetry::inject_noise(breach_checks, 1, 1000)
-    let noised_syncs = polykit_blind_telemetry::inject_noise(sync_operations, 1, 1000)
+    let noised_queries = qkit_blind_telemetry::inject_noise(platform_queries, 1, 1000)
+    let noised_vaults = qkit_blind_telemetry::inject_noise(active_vaults, 1, 1000)
+    let noised_cred_ops = qkit_blind_telemetry::inject_noise(credential_operations, 1, 1000)
+    let noised_autofills = qkit_blind_telemetry::inject_noise(autofill_events, 1, 1000)
+    let noised_breach = qkit_blind_telemetry::inject_noise(breach_checks, 1, 1000)
+    let noised_syncs = qkit_blind_telemetry::inject_noise(sync_operations, 1, 1000)
 
     let anomaly = streamsight_anomaly(breach_checks)
     let baseline = streamsight_baseline("breach_checks")
@@ -178,7 +178,7 @@ circuit polypass_platform_health(
     some(metrics)
 }
 
-circuit polypass_anomaly_check(
+circuit qpass_anomaly_check(
     window_start_ms: u64,
     window_end_ms: u64,
     breach_checks: u64,
@@ -186,7 +186,7 @@ circuit polypass_anomaly_check(
     autofill_events: u64,
 ) -> PassHealthStatus
     profile poly_framework_standard
-    lex global/org/polylabs/pass {
+    lex global/org/polyqlabs/pass {
         sub_lex vault fan_in
     }
     @precision B
@@ -236,28 +236,28 @@ circuit polypass_anomaly_check(
 
 test golden "full_health_pipeline" {
     let spark = bytes(32, 0xAA)
-    let result = polypass_platform_health(spark, 75, 0, 3600000, 100, 50, 200, 80, 10, 30)
+    let result = qpass_platform_health(spark, 75, 0, 3600000, 100, 50, 200, 80, 10, 30)
     assert result != none
 }
 
 test golden "rejects_small_cohort" {
     let spark = bytes(32, 0xBB)
-    let result = polypass_platform_health(spark, 20, 0, 3600000, 50, 10, 30, 5, 2, 1)
+    let result = qpass_platform_health(spark, 20, 0, 3600000, 50, 10, 30, 5, 2, 1)
     assert result == none
 }
 
 test golden "rejects_short_window" {
     let spark = bytes(32, 0xCC)
-    let result = polypass_platform_health(spark, 100, 0, 1800000, 50, 10, 30, 5, 2, 1)
+    let result = qpass_platform_health(spark, 100, 0, 1800000, 50, 10, 30, 5, 2, 1)
     assert result == none
 }
 
 test golden "healthy_state" {
-    let status = polypass_anomaly_check(0, 3600000, 100, 500, 200)
+    let status = qpass_anomaly_check(0, 3600000, 100, 500, 200)
     assert status == PassHealthStatus::Healthy
 }
 
 test golden "degraded_state" {
-    let status = polypass_anomaly_check(0, 3600000, 4000, 500, 200)
+    let status = qpass_anomaly_check(0, 3600000, 4000, 500, 200)
     assert status == PassHealthStatus::Degraded
 }

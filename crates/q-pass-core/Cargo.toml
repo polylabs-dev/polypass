@@ -1,10 +1,10 @@
 [package]
-name = "poly-pass-core"
+name = "q-pass-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Core types, crypto, graph, and circuit logic for Poly Pass"
+description = "Core types, crypto, graph, and circuit logic for Q Pass"
 
 [dependencies]
 ml-kem.workspace = true
